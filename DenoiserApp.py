@@ -10,13 +10,16 @@ import dearpygui.dearpygui as dpg
 import threading
 import sounddevice as sd
 import padasip as pa
+import pathlib
 matplotlib.use('Agg')
 from scipy.io.wavfile import read, write
-from scipy.signal import butter, bessel, cheby1, filtfilt, freqz
+from scipy.signal import butter, bessel, cheby1, filtfilt, freqz, lfilter, sosfilt
 from pathlib import Path
 
-
+CURRENT_DIR = pathlib.Path(__file__).parent.resolve()
 CONFIG_FILE = "window_config.json"
+COMBINED_PATH = os.path.join(CURRENT_DIR, CONFIG_FILE)
+
 audio_file_original = None  # Oryginalny, niezaszumiony sygnał
 window_config = {}
 audio_file = None  # Tutaj będzie zapisany wczytany plik audio, ktory bedzie podlegal odszumianiu
@@ -162,8 +165,8 @@ def stop_processing_indicator():
 
 def load_window_config():
     global window_config
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r") as f:
+    if os.path.exists(COMBINED_PATH):
+        with open(COMBINED_PATH, "r") as f:
             try:
                 window_config = json.load(f)
             except json.JSONDecodeError:
@@ -171,8 +174,13 @@ def load_window_config():
 
 def save_window_config():
     print("[save_window_config] Saving config to file...")
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(window_config, f)
+    print(window_config)
+    try:
+        with open(COMBINED_PATH, "w") as f:
+            json.dump(window_config, f, indent=4)
+        print(f"[save_window_config] Config saved to {COMBINED_PATH}")
+    except Exception as e:
+        print(f"[save_window_config] Error saving config: {e}")
 
 def apply_window_geometry(tag, default_pos=(100, 100), default_size=(400, 300)):
     config = window_config.get(tag, {})
@@ -233,6 +241,9 @@ def load_wav_file_callback(sender, app_data):
     if audio_data.dtype == np.int16:
         audio_data = audio_data.astype(np.float32) / 32768.0
 
+    print("Loaded audio values:")
+    print(audio_data)
+
     audio_file = audio_data
     print(f"Załadowano plik: {audio_file_path}, dane: {audio_file.shape}")
 
@@ -243,14 +254,21 @@ def load_wav_file_callback(sender, app_data):
 def load_original_wav_file_callback(sender, app_data):
     global audio_file_original
 
-    path = app_data['file_path_name']
-    sr, data = read(path)
+    audio_file_path = app_data['file_path_name']
+    sr, data = read(audio_file_path)
 
     if len(data.shape) > 1:
-        data = data[:, 0]  # Kanał 1 tylko
+        data = data[:, 0]  # wybierz tylko lewy kanał (bez uśredniania)
 
-    audio_file_original = data.astype(np.float32)
-    print(f"Załadowano oryginalny plik: {path}, {audio_file_original.shape}")
+    # Konwersja do floatów - potrzebune do później filtracji itd.
+    if data.dtype == np.int16:
+        data = data.astype(np.float32) / 32768.0
+
+    print("Original loaded audio values:")
+    print(data)
+
+    audio_file_original = data
+    print(f"Załadowano plik: {audio_file_path}, dane: {audio_file.shape}")
 
 
 ###############################################################################################################################################################
@@ -365,7 +383,7 @@ def show_spectrum_callback():
         dpg.delete_item("SpectrumWindow")
 
     # --- TWORZENIE NOWEGO OKNA Z WYKRESEM ---
-    with dpg.window(label="Widmo częstotliwości (FFT) po filtracji", tag="SpectrumWindow"):
+    with dpg.window(label="Widmo częstotliwości (FFT) przed filtracją", tag="SpectrumWindow"):
         apply_window_geometry("SpectrumWindow", default_pos=(820, 270), default_size=(500, 250))
 
         with dpg.plot(label="Widmo częstotliwości", height=SpectrumPlotHeight, width=SpectrumPlotWidth):
@@ -970,8 +988,9 @@ def apply_LMS_filter_callback():
 
 # Okno Popup Filtracji
 with dpg.window(label="Filtracja LMS", tag="lms_filter_popup", modal=True, show=False, width=800, height=300):
-    dpg.add_input_int(label="Długość filtra", tag="lms_filter_length", default_value=32, min_value=1, max_value=1024)
-    dpg.add_input_float(label="Współczynnik uczenia (μ)", tag="lms_learning_rate", default_value=0.001, min_value=0.00001, max_value=1.0)
+
+    dpg.add_input_int(label="Długość filtra", tag="lms_filter_length", default_value=32, min_value=1, step=1, max_value=1024)
+    dpg.add_input_float(label="Współczynnik uczenia (μ)", tag="lms_learning_rate", default_value=0.001, step=0.001, min_value=0.00001, max_value=1.0)
     dpg.add_button(label="Zastosuj filtr LMS", callback=apply_LMS_filter_callback)
 
 
@@ -1046,8 +1065,8 @@ def apply_WAVELET_filter_callback():
 # Okno Popup Filtracji
 with dpg.window(label="Filtracja Wavelet", tag="wavelet_filter_popup", modal=True, show=False, width=800, height=400):
     dpg.add_combo(("db4", "haar", "sym5", "coif1"), label="Typ falki", tag="wavelet_name", default_value="db4")
-    dpg.add_input_int(label="Poziom dekompozycji", tag="wavelet_level", default_value=4, min_value=1, max_value=10)
-    dpg.add_input_float(label="Próg (threshold)", tag="wavelet_threshold", default_value=0.04, min_value=0.001, max_value=1.0)
+    dpg.add_input_int(label="Poziom dekompozycji", tag="wavelet_level", default_value=4, step=1, min_value=1, max_value=10)
+    dpg.add_input_float(label="Próg (threshold)", tag="wavelet_threshold", default_value=0.04, step=0.01, min_value=0.001, max_value=1.0)
     dpg.add_button(label="Zastosuj filtr Wavelet", callback=apply_WAVELET_filter_callback)
 
 
@@ -1135,9 +1154,9 @@ def apply_KALMAN_filter_callback():
     dpg.hide_item("kalman_filter_popup")
 
 # Okno Popup Filtracji
-with dpg.window(label="Filtracja Wavelet", tag="kalman_filter_popup", modal=True, show=False, width=800, height=400):
-    dpg.add_input_float(label="Szum procesu (Q)", tag="kalman_Q", default_value=1e-5, min_value=1e-8, max_value=1.0, format="%.8f")
-    dpg.add_input_float(label="Szum pomiaru (R)", tag="kalman_R", default_value=0.01, min_value=1e-8, max_value=1.0, format="%.8f")
+with dpg.window(label="Filtracja Kalmana", tag="kalman_filter_popup", modal=True, show=False, width=800, height=400):
+    dpg.add_input_float(label="Szum procesu (Q)", tag="kalman_Q", default_value=1e-5, min_value=1e-8, step=1e-5, max_value=1.0, format="%.8f")
+    dpg.add_input_float(label="Szum pomiaru (R)", tag="kalman_R", default_value=0.01, min_value=1e-8, step=0.01, max_value=1.0, format="%.8f")
     dpg.add_button(label="Zastosuj filtr Kalmana", callback=apply_KALMAN_filter_callback)
 
 
@@ -1155,7 +1174,7 @@ with dpg.window(label="Filtracja Wavelet", tag="kalman_filter_popup", modal=True
                                                                                                       
 ###############################################################################################################################################################
 
-
+# Funkcja obliczająca kalsyczny zwykły snr
 def calculate_snr(original, noisy_or_filtered):
     original = original.astype(np.float32)
     noise = noisy_or_filtered - original
@@ -1169,6 +1188,144 @@ def calculate_snr(original, noisy_or_filtered):
     snr = 10 * np.log10(signal_power / noise_power)
     return snr
 
+
+# Funkcja obliczająca segmentowy snr
+def compute_segmental_snr(original_signal, noisy_or_filtered, sampling_rate, frame_duration_ms=20):
+    original_signal = original_signal.astype(np.float32)
+    noisy_or_filtered = noisy_or_filtered.astype(np.float32)
+
+    # Jeśli dane są w zakresie int16, znormalizuj:
+    if np.max(np.abs(original_signal)) > 1.0:
+        original_signal /= 32768.0
+    if np.max(np.abs(noisy_or_filtered)) > 1.0:
+        noisy_or_filtered /= 32768.0
+
+    if original_signal.shape != noisy_or_filtered.shape:
+        raise ValueError("Sygnały muszą mieć tą samą długość")
+
+    frame_length = int(sampling_rate * frame_duration_ms / 1000)
+    num_frames = len(original_signal) // frame_length
+
+    segmental_snrs = []
+
+    for i in range(num_frames):
+        start = i * frame_length
+        end = start + frame_length
+
+        s = original_signal[start:end]
+        n = noisy_or_filtered[start:end] - s
+
+        signal_power = np.mean(s ** 2) + 1e-8  # Avoid div by 0
+        noise_power = np.mean(n ** 2) + 1e-8
+
+        snr = 10 * np.log10(signal_power / noise_power)
+        segmental_snrs.append(snr)
+
+    return np.mean(segmental_snrs)
+
+
+# Funkcja obliczająca SNR ważony krytycznie (Critical-band SNR) – uwzględnia, w jakim paśmie słuch jest wrażliwszy.
+def compute_critical_band_snr(original_signal, noisy_or_filtered, sampling_rate):
+    original_signal = original_signal.astype(np.float64)
+    noisy_or_filtered = noisy_or_filtered.astype(np.float64)
+
+    # print("original_signal:")
+    # print(original_signal)
+    # print(max(original_signal))
+
+    # print("noisy_or_filtered:")
+    # print(noisy_or_filtered)
+    # print(max(noisy_or_filtered))
+
+    if np.max(np.abs(original_signal)) > 1.0:
+        original_signal /= 32768.0
+        
+    if np.max(np.abs(noisy_or_filtered)) > 1.0:
+        noisy_or_filtered /= 32768.0
+
+    if original_signal.shape != noisy_or_filtered.shape:
+        raise ValueError("Signals must be the same length")
+
+    bands = bark_band_filters(sampling_rate)
+    cb_snr_values = []
+
+    print("original_signal:")
+    print(original_signal)
+    print("max: " + str(max(original_signal)))
+    print("min: " + str(min(original_signal)))
+
+    print("noisy_or_filtered:")
+    print(noisy_or_filtered)
+    print("max: " + str(max(noisy_or_filtered)))
+    print("min: " + str(min(noisy_or_filtered)))
+
+    start_processing_indicator()
+    try:
+        for low, high in bands:
+            orig_band = SNR_bandpass_filter(original_signal, low, high, sampling_rate)
+            test_band = SNR_bandpass_filter(noisy_or_filtered, low, high, sampling_rate)
+
+            noise_band = test_band - orig_band
+
+            # print("========================================================================")
+            # print("orig_band:")
+            # print(orig_band)
+            # print("max: " + str(max(orig_band)))
+            # print("min: " + str(min(orig_band)))
+
+            # print("========================================================================")
+            # print("test_band:")
+            # print(test_band)
+            # print("max: " + str(max(test_band)))
+            # print("min: " + str(min(test_band)))
+
+            # print("========================================================================")
+            # print("noise_band:")
+            # print(noise_band)
+            # print("max: " + str(max(noise_band)))
+            # print("min: " + str(min(noise_band)))
+
+            signal_power = np.mean(orig_band ** 2) + 1e-8
+            noise_power = np.mean(noise_band ** 2) + 1e-8
+
+            snr_band = 10 * np.log10(signal_power / noise_power)
+            cb_snr_values.append(snr_band)
+    except Exception as e:
+        print(f"Błąd podczas oblicznia compute_critical_band_snr: {e}")
+        stop_processing_indicator()
+        return 0
+
+    stop_processing_indicator()
+    return np.mean(cb_snr_values)
+
+def bark_band_filters(sampling_rate):
+    # Pasma w Hz – uproszczone bark bands
+    bands = [
+        (20, 100), (100, 200), (200, 300), (300, 400), (400, 510),
+        (510, 630), (630, 770), (770, 920), (920, 1080), (1080, 1270),
+        (1270, 1480), (1480, 1720), (1720, 2000), (2000, 2320),
+        (2320, 2700), (2700, 3150), (3150, 3700), (3700, 4400),
+        (4400, 5300), (5300, 6400), (6400, 7700), (7700, 9500),
+        (9500, 12000), (12000, 15500)
+    ]
+    return bands
+
+def SNR_bandpass_filter(signal, lowcut, highcut, fs, order=4):
+    nyq = 0.5 * fs
+    low = lowcut / nyq
+    high = highcut / nyq
+
+    if low <= 0:
+        low = 1e-5  # avoid log(0) or unstable filter
+    if high >= 1:
+        high = 0.9999  # stay within bounds
+
+    sos = butter(order, [low, high], btype='band', output='sos')
+    return sosfilt(sos, signal)
+
+
+
+# Funkcja wywołujaca obliczanie SNR i wyswetlajaca wynik
 def show_snr_analysis():
     if audio_file_original is None:
         print("Nie wczytano oryginalnego (niezaszumionego) sygnału!")
@@ -1183,14 +1340,31 @@ def show_snr_analysis():
     snr_before = calculate_snr(audio_file_original[:min_len], audio_file[:min_len])
     snr_after = calculate_snr(audio_file_original[:min_len], audio_file_filtered[:min_len])
 
+    snr_segmental_before = compute_segmental_snr(audio_file_original[:min_len], audio_file[:min_len], sampling_rate)
+    snr_segmental_after = compute_segmental_snr(audio_file_original[:min_len], audio_file_filtered[:min_len], sampling_rate)
+    
+    snr_cb_before = compute_critical_band_snr(audio_file_original[:min_len], audio_file[:min_len], sampling_rate)
+    snr_cb_after = compute_critical_band_snr(audio_file_original[:min_len], audio_file_filtered[:min_len], sampling_rate)
+
+
     print(f"SNR przed filtracją: {snr_before:.2f} dB")
     print(f"SNR po filtracji:   {snr_after:.2f} dB")
 
+    print(f"SNR segmental przed filtracją: {snr_segmental_before:.2f} dB")
+    print(f"SNR segmental po filtracji:   {snr_segmental_after:.2f} dB")
+
+    print(f"SNR CB przed filtracją: {snr_cb_before:.2f} dB")
+    print(f"SNR CB po filtracji:   {snr_cb_after:.2f} dB")
+
     dpg.show_item("SNRResultWindow")
-    dpg.set_value("SNRText", f"SNR przed filtracją: {snr_before:.2f} dB\nSNR po filtracji: {snr_after:.2f} dB")
+    dpg.set_value("SNRText", 
+                  f"SNR przed filtracją: {snr_before:.2f} dB\nSNR po filtracji: {snr_after:.2f} dB\n\n" +
+                  f"SNR segmental przed filtracją: {snr_segmental_before:.2f} dB\nSNR segmental po filtracji: {snr_segmental_after:.2f} dB\n\n" +
+                  f"SNR CB przed filtracją: {snr_cb_before:.2f} dB\nSNR CB po filtracji: {snr_cb_after:.2f} dB")
 
 
-with dpg.window(label="SNR Analiza", tag="SNRResultWindow", show=False, width=400, height=200):
+with dpg.window(label="SNR Analiza", tag="SNRResultWindow", show=False, width=400, height=150):
+    apply_window_geometry("SNRResultWindow", default_pos=(0, 672), default_size=(400, 150))
     dpg.add_text("", tag="SNRText")
 
 ###############################################################################################################################################################
@@ -1255,47 +1429,44 @@ current_positions = {
 def start_playback(audio_data, sampling_rate, label, window_tag):
     global playback_stream, current_positions, is_playing
 
-    if np.array_equal(audio_data, audio_file_filtered):
-        if is_playing["filtered"]:
-            print("Currently playing filtered")
-            return
-        current_positions["filtered"] = 0.0
-        is_playing["filtered"] = True
-    else:
-        if is_playing["input"]:
-            print("Currently playing")
-            return
-        current_positions["input"] = 0.0
-        is_playing["input"] = True
+    is_filtered = np.array_equal(audio_data, audio_file_filtered)
+    signal_key = "filtered" if is_filtered else "input"
+
+    if is_playing[signal_key]:
+        print(f"Currently playing {signal_key}")
+        return
+
+    current_positions[signal_key] = 0.0
+    is_playing[signal_key] = True
 
     def callback(outdata, frames, time, status):
-        global current_positions, sampling_rate
+        nonlocal is_filtered, signal_key
 
         if status:
             print(status)
 
-        if np.array_equal(audio_data, audio_file_filtered):
-            start_idx = int(current_positions["filtered"] * sampling_rate)
-        else:
-            start_idx = int(current_positions["input"] * sampling_rate)
-
+        start_idx = int(current_positions[signal_key] * sampling_rate)
         end_idx = start_idx + frames
 
-        if end_idx > len(audio_data):
-            end_idx = len(audio_data)
-            outdata[:end_idx-start_idx] = audio_data[start_idx:end_idx][:, None]
+        chunk = audio_data[start_idx:end_idx]
+
+        if len(chunk) < frames:
+            outdata[:len(chunk)] = chunk[:, None]
+            outdata[len(chunk):] = 0
+            is_playing[signal_key] = False
             playback_stream.stop()
             return
-
-        outdata[:] = audio_data[start_idx:end_idx][:, None]
-
-        if np.array_equal(audio_data, audio_file_filtered):
-            current_positions["filtered"] += frames / sampling_rate
         else:
-            current_positions["input"] += frames / sampling_rate
+            outdata[:] = chunk[:, None]
+
+        current_positions[signal_key] += frames / sampling_rate
 
     # Uruchom monitoring progresu
-    threading.Thread(target=monitor_progress, args=(window_tag, audio_data, lambda: current_positions["filtered"] if np.array_equal(audio_data, audio_file_filtered) else current_positions["input"]), daemon=True).start()
+    threading.Thread(
+        target=monitor_progress,
+        args=(window_tag, audio_data, lambda: current_positions[signal_key]),
+        daemon=True
+    ).start()
 
     playback_stream = sd.OutputStream(
             callback=callback,
@@ -1306,7 +1477,6 @@ def start_playback(audio_data, sampling_rate, label, window_tag):
         )    
     playback_stream.start()
     
-
 # Stop odtwarzania
 def stop_playback(audio_data):
     global playback_stream, is_playing
@@ -1420,7 +1590,8 @@ tracked_tags = [
     "BeforeAfterPlotWindow",
     "DifferenceTimeDomainWindow",
     "DifferenceFrequencyDomainWindow",
-    "BeforeAfterFrequencyDomainWindow"
+    "BeforeAfterFrequencyDomainWindow",
+    "SNRResultWindow",
 ]
 
 load_window_config()
@@ -1445,11 +1616,25 @@ def open_load_dialog():
 def open_load_original_dialog():
     dpg.show_item("load_original_wav_file_dialog")
 
-with dpg.file_dialog(directory_selector=False, show=False, modal=True, width=900, height=400, callback=load_wav_file_callback, tag="load_wav_file_dialog"):
+with dpg.file_dialog(directory_selector=False,
+                     show=False, 
+                     modal=True, 
+                     width=900, 
+                     height=500, 
+                     label="Wczytywanie pliku do odszumienia", 
+                     callback=load_wav_file_callback, 
+                     tag="load_wav_file_dialog"):
     dpg.add_file_extension(".wav", color=(150, 255, 150, 255))
     dpg.add_file_extension(".*")
 
-with dpg.file_dialog(directory_selector=False, show=False, modal=True, width=900, height=400, callback=load_original_wav_file_callback, tag="load_original_wav_file_dialog"):
+with dpg.file_dialog(directory_selector=False, 
+                     show=False, 
+                     modal=True, 
+                     width=900,
+                     height=500, 
+                     label="Wczytywanie oryginalnego (niezaszumionego) pliku", 
+                     callback=load_original_wav_file_callback, 
+                     tag="load_original_wav_file_dialog"):
     dpg.add_file_extension(".wav", color=(150, 255, 150, 255))
     dpg.add_file_extension(".*")
 

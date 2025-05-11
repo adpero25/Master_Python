@@ -1,0 +1,152 @@
+{
+    "AmplitudeWindow": {
+        "pos": [
+            268,
+            2
+        ],
+        "size": [
+            615,
+            285
+        ]
+    },
+    "MainWindow": {
+        "pos": [
+            0,
+            0
+        ],
+        "size": [
+            265,
+            574
+        ]
+    },
+    "FrequencyWindow": {
+        "pos": [
+            268,
+            288
+        ],
+        "size": [
+            714,
+            286
+        ]
+    },
+    "AmplitudeWindowFiltered": {
+        "pos": [
+            883,
+            2
+        ],
+        "size": [
+            652,
+            285
+        ]
+    },
+    "FrequencyWindowFiltered": {
+        "pos": [
+            820,
+            10
+        ],
+        "size": [
+            500,
+            250
+        ]
+    },
+    "SpectrumWindowFiltered": {
+        "pos": [
+            884,
+            288
+        ],
+        "size": [
+            651,
+            286
+        ]
+    },
+    "BenchmarkWindow": {
+        "pos": [
+            0,
+            577
+        ],
+        "size": [
+            265,
+            108
+        ]
+    },
+    "SpectrumWindow": {
+        "pos": [
+            268,
+            288
+        ],
+        "size": [
+            616,
+            286
+        ]
+    },
+    "InputSignalPlaybackWindow": {
+        "pos": [
+            268,
+            578
+        ],
+        "size": [
+            500,
+            107
+        ]
+    },
+    "FilteredSignalPlaybackWindow": {
+        "pos": [
+            884,
+            576
+        ],
+        "size": [
+            500,
+            108
+        ]
+    },
+    "DifferenceFrequencyDomainWindow": {
+        "pos": [
+            269,
+            732
+        ],
+        "size": [
+            1266,
+            258
+        ]
+    },
+    "DifferenceTimeDomainWindow": {
+        "pos": [
+            269,
+            493
+        ],
+        "size": [
+            1266,
+            258
+        ]
+    },
+    "BeforeAfterPlotWindow": {
+        "pos": [
+            268,
+            2
+        ],
+        "size": [
+            1267,
+            259
+        ]
+    },
+    "BeforeAfterFrequencyDomainWindow": {
+        "pos": [
+            268,
+            246
+        ],
+        "size": [
+            1266,
+            260
+        ]
+    },
+    "SNRResultWindow": {
+        "pos": [
+            0,
+            672
+        ],
+        "size": [
+            333,
+            142
+        ]
+    }
+}
