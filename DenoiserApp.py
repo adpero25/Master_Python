@@ -11,16 +11,31 @@ import threading
 import sounddevice as sd
 import padasip as pa
 import pathlib
+# import tensorflow as tf
+import torch
+import torchaudio
+import librosa
 matplotlib.use('Agg')
 from scipy.io.wavfile import read, write
 from scipy.signal import butter, bessel, cheby1, filtfilt, freqz, lfilter, sosfilt
+from scipy.fft import fft, fftfreq
 from pathlib import Path
+from torchmetrics.functional.audio import signal_noise_ratio
+from typing import Union, Tuple
+
+# from tensorflow.python.keras.layers import *
+# from keras.models import Sequential, load_model 
+# from keras.layers import Dense, Input, Flatten, Reshape
+# from sklearn.preprocessing import MinMaxScaler
+
 
 CURRENT_DIR = pathlib.Path(__file__).parent.resolve()
 CONFIG_FILE = "window_config.json"
 COMBINED_PATH = os.path.join(CURRENT_DIR, CONFIG_FILE)
 
 audio_file_original = None  # Oryginalny, niezaszumiony sygnał
+sampling_rate_original = None  # Oryginalny, niezaszumiony sygnał - sampling rate
+
 window_config = {}
 audio_file = None  # Tutaj będzie zapisany wczytany plik audio, ktory bedzie podlegal odszumianiu
 sampling_rate = None
@@ -100,6 +115,34 @@ def stop_benchmark_and_show_results():
     filter_start_time = None
     start_cpu_percent = None
     start_memory_info = None
+
+# THD mierzy zniekształcenia sygnału, które powstają jako harmoniczne — im niższy THD, tym mniej zniekształcony sygnał.
+def calculate_thd(signal, fs, fundamental_freq=None):
+    # FFT
+    N = len(signal)
+    yf = fft(signal)
+    yf = np.abs(yf[:N // 2])  # tylko dodatnie częstotliwości
+    freqs = fftfreq(N, 1 / fs)[:N // 2]
+
+    # Znajdź składową podstawową
+    if fundamental_freq is None:
+        idx_f1 = np.argmax(yf)
+    else:
+        idx_f1 = np.argmin(np.abs(freqs - fundamental_freq))
+
+    fundamental = yf[idx_f1]
+    
+    # Harmoniczne to wielokrotności składowej podstawowej
+    harmonics = []
+    for i in range(2, 6):  # 2. do 5. harmonicznej
+        target_freq = i * freqs[idx_f1]
+        idx = np.argmin(np.abs(freqs - target_freq))
+        harmonics.append(yf[idx])
+
+    harmonic_power = np.sum(np.square(harmonics))
+    thd = np.sqrt(harmonic_power) / fundamental
+
+    return thd * 100  # jako %
 
 
 ###############################################################################################################################################################
@@ -255,7 +298,7 @@ def load_original_wav_file_callback(sender, app_data):
     global audio_file_original
 
     audio_file_path = app_data['file_path_name']
-    sr, data = read(audio_file_path)
+    sampling_rate_original, data = read(audio_file_path)
 
     if len(data.shape) > 1:
         data = data[:, 0]  # wybierz tylko lewy kanał (bez uśredniania)
@@ -266,9 +309,10 @@ def load_original_wav_file_callback(sender, app_data):
 
     print("Original loaded audio values:")
     print(data)
+    print(sampling_rate_original)
 
     audio_file_original = data
-    print(f"Załadowano plik: {audio_file_path}, dane: {audio_file.shape}")
+    print(f"Załadowano plik: {audio_file_path}, dane: {audio_file_original.shape}")
 
 
 ###############################################################################################################################################################
@@ -390,6 +434,124 @@ def show_spectrum_callback():
             dpg.add_plot_axis(dpg.mvXAxis, label="Częstotliwość [Hz]")
             with dpg.plot_axis(dpg.mvYAxis, label="Amplituda") as y_axis:
                 dpg.add_line_series(freqs.tolist(), spectrum.tolist(), label="Widmo", parent=y_axis)
+
+
+def show_original_plot_callback():
+    global audio_file_original
+    if audio_file_original is None:
+        print("Najpierw wczytaj plik!")
+        return
+
+    if not isinstance(audio_file_original, np.ndarray):
+        print("Błąd: dane audio nie są numpy array!")
+        return
+
+    # Sprawdzenie stereo/mono
+    if audio_file_original.ndim == 2:
+        data_to_plot = audio_file_original[:, 0]
+    else:
+        data_to_plot = audio_file_original
+
+    if data_to_plot.size == 0:
+        print("Brak danych audio do wyświetlenia.")
+        return
+
+    # --- DOWN SAMPLING ---
+    max_points = 5000
+    if len(data_to_plot) <= max_points:
+        downsampled_data = data_to_plot
+        downsampled_x = np.arange(len(data_to_plot))
+    else:
+        factor = len(data_to_plot) // max_points
+        downsampled_data = data_to_plot[::factor]
+        downsampled_x = np.arange(0, len(data_to_plot), factor)
+
+        # Czasami X może być dłuższy niż Y przez zaokrąglenie — przycinamy
+        min_len = min(len(downsampled_data), len(downsampled_x))
+        downsampled_data = downsampled_data[:min_len]
+        downsampled_x = downsampled_x[:min_len]
+
+    # --- USUWANIE STAREGO OKNA ---
+    if dpg.does_item_exist("OriginalAmplitudeWindow"):
+        dpg.delete_item("OriginalAmplitudeWindow")
+
+    # --- TWORZENIE NOWEGO OKNA Z WYKRESEM ---
+    with dpg.window(label="Wykres Amplitudy", tag="OriginalAmplitudeWindow"):
+        apply_window_geometry("OriginalAmplitudeWindow", default_pos=(820, 10), default_size=(500, 250))
+        with dpg.plot(label="Amplituda w czasie", height=AmplitudePlotHeight, width=AmplitudePlotWidth):
+            dpg.add_plot_axis(dpg.mvXAxis, label="Próbki")
+            with dpg.plot_axis(dpg.mvYAxis, label="Amplituda") as y_axis:
+                line_tag = "orig_amp_line"
+                dpg.add_line_series([], [], parent=y_axis)
+                dpg.add_line_series([], [], parent=y_axis)
+                dpg.add_line_series(downsampled_x.tolist(), downsampled_data.tolist(), label="Amplituda", parent=y_axis, tag=line_tag)
+
+
+def apply_line_color(series_tag, color_rgba):
+    with dpg.theme() as theme:
+        with dpg.theme_component(dpg.mvLineSeries):
+            dpg.add_theme_color(dpg.mvThemeCol_PlotLines, color_rgba, category=dpg.mvThemeCat_Plots)
+    dpg.bind_item_theme(series_tag, theme)
+
+def show_original_spectrum_callback():
+    global audio_file_original, sampling_rate_original
+    if audio_file_original is None:
+        print("Najpierw wczytaj plik!")
+        return
+
+    # Jeśli dane są typu int16, przeskaluj do floatów -1..1 tylko na potrzeby wyświetlenia
+    if audio_file_original.dtype == np.int16:
+        data_to_plot = audio_file_original.astype(np.float32) / 32767.0
+    else:
+        data_to_plot = np.copy(audio_file_original)
+
+    if sampling_rate_original is None:
+        print("sampling_rate_original is None, setting 44100Hz")
+        sampling_rate_original = 44100
+
+    # Obsługa mono/stereo
+    if data_to_plot.ndim == 2:
+        data_to_plot = data_to_plot[:, 0]  # Wybieramy pierwszy kanał
+
+    if data_to_plot.size == 0:
+        print("Brak danych do wyświetlenia.")
+        return
+
+    # --- FFT ---
+    spectrum = np.abs(np.fft.fft(data_to_plot))
+    freqs = np.fft.fftfreq(len(data_to_plot), d=1.0 / sampling_rate_original)
+
+    # Używamy tylko dodatnich częstotliwości
+    half = len(freqs) // 2
+    freqs = freqs[:half]
+    spectrum = spectrum[:half]
+
+    # --- DOWNSAMPLING --- (dla lepszej wydajności przy dużych plikach)
+    max_points = 5000
+    if len(freqs) > max_points:
+        factor = len(freqs) // max_points
+        spectrum = spectrum[::factor]
+        freqs = freqs[::factor]
+
+    # Upewniamy się, że X i Y mają tę samą długość
+    min_len = min(len(freqs), len(spectrum))
+    freqs = freqs[:min_len]
+    spectrum = spectrum[:min_len]
+
+    if dpg.does_item_exist("OriginalSpectrumWindow"):
+        dpg.delete_item("OriginalSpectrumWindow")
+
+    # --- TWORZENIE NOWEGO OKNA Z WYKRESEM ---
+    with dpg.window(label="Widmo częstotliwości (FFT) przed filtracją", tag="OriginalSpectrumWindow"):
+        apply_window_geometry("OriginalSpectrumWindow", default_pos=(820, 270), default_size=(500, 250))
+
+        with dpg.plot(label="Widmo częstotliwości", height=SpectrumPlotHeight, width=SpectrumPlotWidth):
+            dpg.add_plot_axis(dpg.mvXAxis, label="Częstotliwość [Hz]")
+            with dpg.plot_axis(dpg.mvYAxis, label="Amplituda") as y_axis:
+                line_tag = "orig_spec_line"
+                dpg.add_line_series([], [], parent=y_axis)
+                dpg.add_line_series([], [], parent=y_axis)
+                dpg.add_line_series(freqs.tolist(), spectrum.tolist(), label="Widmo", parent=y_axis, tag=line_tag)
 
 
 ###############################################################################################################################################################
@@ -697,10 +859,13 @@ def apply_LOWPASS_filter_callback():
     stop_benchmark_and_show_results()
     stop_processing_indicator()
 
+    thd_before = calculate_thd(audio_file, sampling_rate)
+    thd_low = calculate_thd(audio_file_filtered, new_sampling_rate)
+
     file_original_path = Path(audio_file_path)
     file_new_path = file_original_path.with_stem(f"{Path(audio_file_path).stem}_LOW_{filter_type}_{filter_order}_{cutoff_freq}")
     
-    print(f"Zastosowano filtr: {filter_type}, rząd: {filter_order}, odcięcie: {cutoff_freq} Hz")
+    print(f"Zastosowano filtr: {filter_type}, rząd: {filter_order}, odcięcie: {cutoff_freq} Hz, THD before: {thd_before} THD after: {thd_low}")
 
     show_filtered_plot_callback()
     show_filtered_spectrum_callback()
@@ -780,7 +945,10 @@ def apply_HIPASS_filter_callback():
     stop_benchmark_and_show_results()
     stop_processing_indicator()
 
-    print(f"Zastosowano filtr: {filter_type}, rząd: {filter_order}, odcięcie: {cutoff_freq} Hz")
+    thd_before = calculate_thd(audio_file, sampling_rate)
+    thd_high = calculate_thd(audio_file_filtered, new_sampling_rate)
+
+    print(f"Zastosowano filtr: {filter_type}, rząd: {filter_order}, odcięcie: {cutoff_freq} Hz, THD before: {thd_before}, THD: {thd_high}")
 
     file_original_path = Path(audio_file_path)
     file_new_path = file_original_path.with_stem(f"{Path(audio_file_path).stem}_HIGH_{filter_type}_{filter_order}_{cutoff_freq}")
@@ -864,7 +1032,10 @@ def apply_BANDPASS_filter_callback():
     stop_benchmark_and_show_results()
     stop_processing_indicator()
 
-    print(f"Zastosowano filtr: {filter_type}, rząd: {filter_order}, odcięcie dolne: {cutoff_low}, odcięcie górne: {cutoff_high} Hz")
+    thd_before = calculate_thd(audio_file, sampling_rate) 
+    thd_band = calculate_thd(audio_file_filtered, new_sampling_rate)
+
+    print(f"Zastosowano filtr: {filter_type}, rząd: {filter_order}, odcięcie dolne: {cutoff_low}, odcięcie górne: {cutoff_high} Hz, THD before: {thd_before}, THD: {thd_band}")
 
     file_original_path = Path(audio_file_path)
     file_new_path = file_original_path.with_stem(f"{Path(audio_file_path).stem}_BAND_{filter_type}_{filter_order}_{cutoff_low}-{cutoff_high}")
@@ -921,29 +1092,24 @@ def lms_filter(x, d, filter_order=32, mu=0.001):
     f = pa.filters.FilterLMS(n=filter_order, mu=mu, w="zeros")
     y, e, w = f.run(d_vector, x_matrix)  # Uwaga: kolejność (d, x)!
     
-    return y
+    return y, e, w
 
-    # # Initialize filter coefficients
-    # w = np.zeros(filter_order)
-    # y = np.zeros(len(x))
-    # e = np.zeros(len(x))
+def measure_lms_convergence(e, stable_duration=10, threshold_ratio=1.05):
+    """
+    e - wektor błędu z LMS
+    stable_duration - liczba kolejnych próbek, przez które błąd musi być stabilny
+    threshold_ratio - jak blisko musi być do minimalnego błędu
+    """
+    mse = e ** 2
+    min_mse = np.min(mse)
+    threshold = threshold_ratio * min_mse
 
-    # # Normalize signals
-    # max = np.abs(x)
-    # x = x / np.max(max)
-    # d = d / np.max(np.abs(d))
+    for i in range(len(mse) - stable_duration):
+        window = mse[i:i+stable_duration]
+        if np.all(window < threshold):
+            return i  # indeks konwergencji
 
-    # # LMS algorithm
-    # for n in range(filter_order, len(x)):
-    #     x_n = x[n:n - filter_order:-1]  # Slice input signal
-    #     y[n] = np.dot(w, x_n)           # Filter output
-    #     e[n] = d[n] - y[n]              # Error signal
-    #     w += mu * e[n] * x_n            # Update filter coefficients
-
-    # # y_int16 = np.int16(y * 32767)  # Skalowanie do 16-bit zakresu integera 
-
-    # # return y_int16
-    # return y
+    return -1  # brak konwergencji
 
 def open_LMS_filter_popup_callback():
     dpg.show_item("lms_filter_popup")
@@ -963,9 +1129,12 @@ def apply_LMS_filter_callback():
 
     if audio_file.ndim == 2:
         for channel in range(audio_file.shape[1]):
-            audio_file_filtered[:, channel] = lms_filter(audio_file[:, channel], audio_file[:, channel], filter_length, mu)
+            audio_file_filtered[:, channel], error, weights = lms_filter(audio_file[:, channel], audio_file[:, channel], filter_length, mu)
     else:
-        audio_file_filtered = lms_filter(audio_file, audio_file, filter_length, mu)
+        audio_file_filtered, error, weights  = lms_filter(audio_file, audio_file, filter_length, mu)
+
+    convergence_index = measure_lms_convergence(error)
+    print(f"Szybkość konwergencji: {convergence_index} próbek")
 
     max_len = max(len(audio_file), len(audio_file_filtered))
     audio_file_filtered = np.pad(audio_file_filtered, (max_len - len(audio_file_filtered), 0), mode='constant')
@@ -1162,21 +1331,125 @@ with dpg.window(label="Filtracja Kalmana", tag="kalman_filter_popup", modal=True
 
 ###############################################################################################################################################################
 
-#   ______   _______   __        ______   ______   ________  __    __  ______  ________         ______   __    __  _______  
-#  /      \ /       \ /  |      /      | /      \ /        |/  \  /  |/      |/        |       /      \ /  \  /  |/       \ 
-# /$$$$$$  |$$$$$$$  |$$ |      $$$$$$/ /$$$$$$  |$$$$$$$$/ $$  \ $$ |$$$$$$/ $$$$$$$$/       /$$$$$$  |$$  \ $$ |$$$$$$$  |
-# $$ |  $$ |$$ |__$$ |$$ |        $$ |  $$ |  $$/     /$$/  $$$  \$$ |  $$ |  $$ |__          $$ \__$$/ $$$  \$$ |$$ |__$$ |
-# $$ |  $$ |$$    $$< $$ |        $$ |  $$ |         /$$/   $$$$  $$ |  $$ |  $$    |         $$      \ $$$$  $$ |$$    $$< 
-# $$ |  $$ |$$$$$$$  |$$ |        $$ |  $$ |   __   /$$/    $$ $$ $$ |  $$ |  $$$$$/           $$$$$$  |$$ $$ $$ |$$$$$$$  |
-# $$ \__$$ |$$ |__$$ |$$ |_____  _$$ |_ $$ \__/  | /$$/____ $$ |$$$$ | _$$ |_ $$ |_____       /  \__$$ |$$ |$$$$ |$$ |  $$ |
-# $$    $$/ $$    $$/ $$       |/ $$   |$$    $$/ /$$      |$$ | $$$ |/ $$   |$$       |      $$    $$/ $$ | $$$ |$$ |  $$ |
-#  $$$$$$/  $$$$$$$/  $$$$$$$$/ $$$$$$/  $$$$$$/  $$$$$$$$/ $$/   $$/ $$$$$$/ $$$$$$$$/        $$$$$$/  $$/   $$/ $$/   $$/ 
+#   ______   __    __  _______  
+#  /      \ /  \  /  |/       \ 
+# /$$$$$$  |$$  \ $$ |$$$$$$$  |
+# $$ \__$$/ $$$  \$$ |$$ |__$$ |
+# $$      \ $$$$  $$ |$$    $$< 
+#  $$$$$$  |$$ $$ $$ |$$$$$$$  |
+# /  \__$$ |$$ |$$$$ |$$ |  $$ |
+# $$    $$/ $$ | $$$ |$$ |  $$ |
+#  $$$$$$/  $$/   $$/ $$/   $$/ 
                                                                                                       
 ###############################################################################################################################################################
+import librosa
+from typing import Union, Tuple
+
+def load_audio(
+    path_or_array: Union[str, np.ndarray],
+    sr: int = None
+) -> Tuple[np.ndarray, int]:
+    """
+    Wczytuje plik WAV lub zwraca podaną tablicę.
+    Jeśli podano ścieżkę -> zwraca (y, sr), gdzie y.shape = (channels, samples).
+    Jeśli podano ndarray:
+      -      jeśli kształt (n,) -> mono
+      -      jeśli kształt (n,2) -> stereo
+    """
+    if isinstance(path_or_array, str):
+        y, sr = librosa.load(path_or_array, sr=sr, mono=False)  # shape (channels, samples) lub (samples,)
+        if y.ndim == 1:
+            y = y[np.newaxis, :]  # (1, samples)
+        return y, sr
+    elif isinstance(path_or_array, np.ndarray):
+        arr = path_or_array
+        if arr.ndim == 1:
+            return arr[np.newaxis, :], sr or 0
+        elif arr.ndim == 2:
+            # zakładamy (channels, samples)
+            return arr, sr or 0
+        else:
+            raise ValueError("Tablica musi mieć wymiar 1D (mono) lub 2D (stereo).")
+    else:
+        raise TypeError("path_or_array musi być ścieżką (str) lub ndarray.")
+
+def calculate_snr2(
+    original: Union[str, np.ndarray],
+    noisy: Union[str, np.ndarray],
+    sr: int = None,
+    mode: str = 'mean'
+) -> float:
+    """
+    Oblicza SNR (dB) między sygnałem oryginalnym a zaszumionym/po filtracji.
+
+    Parametry:
+    - original: ścieżka do WAV lub ndarray (mono lub stereo)
+    - noisy:    ścieżka do WAV lub ndarray (mono lub stereo)
+    - sr:       żądana częstotliwość próbkowania (tylko przy ndarray=None)
+    - mode:     jak zredukować stereo do jednej wartości:
+                'mean'  - średnia SNR z kanałów
+                'mono'  - najpierw miksuje do mono (średnia kanałów), potem liczy
+                'perch' - zwraca listę wartości [snr_ch0, snr_ch1, ...]
+
+    Zwraca:
+    - float (SNR w dB) albo listę floatów jeśli mode='perch'
+    """
+    # Wczytanie
+    sig_orig, sr1 = load_audio(original, sr)
+    sig_noisy, sr2 = load_audio(noisy,    sr)
+    if sr1 and sr2 and sr1 != sr2:
+        raise ValueError(f"Różne sr: {sr1} vs {sr2}")
+    
+    # Przytnij do tej samej długości
+    n = min(sig_orig.shape[1], sig_noisy.shape[1])
+    sig_orig = sig_orig[:, :n]
+    sig_noisy = sig_noisy[:, :n]
+
+    # Oblicz szum
+    noise = sig_noisy - sig_orig
+
+    # Moc sygnału i mocy szumu per kanał
+    p_signal = np.mean(sig_orig**2, axis=1)
+    p_noise  = np.mean(noise**2,    axis=1)
+
+    # Unikamy dzielenia przez zero
+    p_noise = np.where(p_noise == 0, np.finfo(float).eps, p_noise)
+
+    # SNR per kanał (linia)
+    snr_vals = 10 * np.log10(p_signal / p_noise)
+
+    # Zwracanie zgodnie z trybem
+    if mode == 'perch':
+        return snr_vals.tolist()
+    elif mode == 'mean':
+        return float(np.mean(snr_vals))
+    elif mode == 'mono':
+        # miks do mono i liczenie na jednym kanale
+        orig_mono = np.mean(sig_orig, axis=0)
+        noisy_mono = np.mean(sig_noisy, axis=0)
+        noise_mono = noisy_mono - orig_mono
+        p_s = np.mean(orig_mono**2)
+        p_n = np.mean(noise_mono**2)
+        p_n = p_n if p_n != 0 else np.finfo(float).eps
+        return float(10 * np.log10(p_s / p_n))
+    else:
+        raise ValueError("Nieznany tryb. Wybierz 'mean', 'mono' lub 'perch'.")
+
+# — przykład użycia —
+
+# # 1) Z plików WAV:
+# snr_db = calculate_snr("original.wav", "noisy.wav", mode='mean')
+# print(f"SNR (średnie): {snr_db:.2f} dB")
+
+# 2) Z tablic NumPy:
+#    audio_orig = np.array([...])
+#    audio_noisy = np.array([...])
+#    snr_db = calculate_snr(audio_orig, audio_noisy, sr=44100, mode='perch')
+#    print("SNR per channel:", snr_db)
+
 
 # Funkcja obliczająca kalsyczny zwykły snr
 def calculate_snr(original, noisy_or_filtered):
-    original = original.astype(np.float32)
     noise = noisy_or_filtered - original
 
     signal_power = np.mean(original ** 2)
@@ -1187,7 +1460,6 @@ def calculate_snr(original, noisy_or_filtered):
     
     snr = 10 * np.log10(signal_power / noise_power)
     return snr
-
 
 # Funkcja obliczająca segmentowy snr
 def compute_segmental_snr(original_signal, noisy_or_filtered, sampling_rate, frame_duration_ms=20):
@@ -1223,7 +1495,6 @@ def compute_segmental_snr(original_signal, noisy_or_filtered, sampling_rate, fra
 
     return np.mean(segmental_snrs)
 
-
 # Funkcja obliczająca SNR ważony krytycznie (Critical-band SNR) – uwzględnia, w jakim paśmie słuch jest wrażliwszy.
 def compute_critical_band_snr(original_signal, noisy_or_filtered, sampling_rate):
     original_signal = original_signal.astype(np.float64)
@@ -1249,15 +1520,15 @@ def compute_critical_band_snr(original_signal, noisy_or_filtered, sampling_rate)
     bands = bark_band_filters(sampling_rate)
     cb_snr_values = []
 
-    print("original_signal:")
-    print(original_signal)
-    print("max: " + str(max(original_signal)))
-    print("min: " + str(min(original_signal)))
+    # print("original_signal:")
+    # print(original_signal)
+    # print("max: " + str(max(original_signal)))
+    # print("min: " + str(min(original_signal)))
 
-    print("noisy_or_filtered:")
-    print(noisy_or_filtered)
-    print("max: " + str(max(noisy_or_filtered)))
-    print("min: " + str(min(noisy_or_filtered)))
+    # print("noisy_or_filtered:")
+    # print(noisy_or_filtered)
+    # print("max: " + str(max(noisy_or_filtered)))
+    # print("min: " + str(min(noisy_or_filtered)))
 
     start_processing_indicator()
     try:
@@ -1323,10 +1594,10 @@ def SNR_bandpass_filter(signal, lowcut, highcut, fs, order=4):
     sos = butter(order, [low, high], btype='band', output='sos')
     return sosfilt(sos, signal)
 
-
-
 # Funkcja wywołujaca obliczanie SNR i wyswetlajaca wynik
 def show_snr_analysis():
+    global audio_file_original, audio_file, sampling_rate
+
     if audio_file_original is None:
         print("Nie wczytano oryginalnego (niezaszumionego) sygnału!")
         return
@@ -1340,15 +1611,20 @@ def show_snr_analysis():
     snr_before = calculate_snr(audio_file_original[:min_len], audio_file[:min_len])
     snr_after = calculate_snr(audio_file_original[:min_len], audio_file_filtered[:min_len])
 
+    snr_bf = calculate_snr2(audio_file_original[:min_len], audio_file[:min_len], sr=sampling_rate, mode='mean')
+    snr_af = calculate_snr2(audio_file_original[:min_len], audio_file_filtered[:min_len], sr=sampling_rate, mode='mean')
+
     snr_segmental_before = compute_segmental_snr(audio_file_original[:min_len], audio_file[:min_len], sampling_rate)
     snr_segmental_after = compute_segmental_snr(audio_file_original[:min_len], audio_file_filtered[:min_len], sampling_rate)
     
     snr_cb_before = compute_critical_band_snr(audio_file_original[:min_len], audio_file[:min_len], sampling_rate)
     snr_cb_after = compute_critical_band_snr(audio_file_original[:min_len], audio_file_filtered[:min_len], sampling_rate)
 
-
     print(f"SNR przed filtracją: {snr_before:.2f} dB")
     print(f"SNR po filtracji:   {snr_after:.2f} dB")
+    
+    print(f"SNR2 przed filtracją: {snr_bf:.2f} dB")
+    print(f"SNR2 po filtracji:   {snr_af:.2f} dB")
 
     print(f"SNR segmental przed filtracją: {snr_segmental_before:.2f} dB")
     print(f"SNR segmental po filtracji:   {snr_segmental_after:.2f} dB")
@@ -1359,6 +1635,7 @@ def show_snr_analysis():
     dpg.show_item("SNRResultWindow")
     dpg.set_value("SNRText", 
                   f"SNR przed filtracją: {snr_before:.2f} dB\nSNR po filtracji: {snr_after:.2f} dB\n\n" +
+                  f"SNR2 przed filtracją: {snr_bf:.2f} dB\nSNR2 po filtracji: {snr_af:.2f} dB\n\n" +
                   f"SNR segmental przed filtracją: {snr_segmental_before:.2f} dB\nSNR segmental po filtracji: {snr_segmental_after:.2f} dB\n\n" +
                   f"SNR CB przed filtracją: {snr_cb_before:.2f} dB\nSNR CB po filtracji: {snr_cb_after:.2f} dB")
 
@@ -1497,7 +1774,7 @@ def seek_audio(sender, app_data, user_data):
     signal_type, slider_tag = user_data
     new_position = dpg.get_value(slider_tag)
     current_positions[signal_type] = new_position
-    print(f"Seek {signal_type}: {new_position:.2f} s")
+    # print(f"Seek {signal_type}: {new_position:.2f} s")
 
 # Aktualizacja progress bara
 def monitor_progress(window_tag, audio_data, get_current_position):
@@ -1563,6 +1840,155 @@ def create_audio_controls_window(windowTag, label, audio_data, sampling_rate, si
 
 ###############################################################################################################################################################
 
+#   ______   ______  __    __         ______   ________  __    __  ________  _______    ______   ________  ______   _______  
+#  /      \ /      |/  \  /  |       /      \ /        |/  \  /  |/        |/       \  /      \ /        |/      \ /       \ 
+# /$$$$$$  |$$$$$$/ $$  \ $$ |      /$$$$$$  |$$$$$$$$/ $$  \ $$ |$$$$$$$$/ $$$$$$$  |/$$$$$$  |$$$$$$$$//$$$$$$  |$$$$$$$  |
+# $$ \__$$/   $$ |  $$$  \$$ |      $$ | _$$/ $$ |__    $$$  \$$ |$$ |__    $$ |__$$ |$$ |__$$ |   $$ |  $$ |  $$ |$$ |__$$ |
+# $$      \   $$ |  $$$$  $$ |      $$ |/    |$$    |   $$$$  $$ |$$    |   $$    $$< $$    $$ |   $$ |  $$ |  $$ |$$    $$< 
+#  $$$$$$  |  $$ |  $$ $$ $$ |      $$ |$$$$ |$$$$$/    $$ $$ $$ |$$$$$/    $$$$$$$  |$$$$$$$$ |   $$ |  $$ |  $$ |$$$$$$$  |
+# /  \__$$ | _$$ |_ $$ |$$$$ |      $$ \__$$ |$$ |_____ $$ |$$$$ |$$ |_____ $$ |  $$ |$$ |  $$ |   $$ |  $$ \__$$ |$$ |  $$ |
+# $$    $$/ / $$   |$$ | $$$ |      $$    $$/ $$       |$$ | $$$ |$$       |$$ |  $$ |$$ |  $$ |   $$ |  $$    $$/ $$ |  $$ |
+#  $$$$$$/  $$$$$$/ $$/   $$/        $$$$$$/  $$$$$$$$/ $$/   $$/ $$$$$$$$/ $$/   $$/ $$/   $$/    $$/    $$$$$$/  $$/   $$/ 
+                                                                                                                           
+###############################################################################################################################################################
+import soundfile as sf
+
+def generate_sine_wave(frequencies, duration, amplitude=0.5, sampling_rate=44100):
+    """
+    frequencies: float lub lista floatów [Hz]
+    duration: czas w sekundach
+    amplitude: od 0 do 1
+    """
+    t = np.linspace(0, duration, int(sampling_rate * duration), endpoint=False)
+    if isinstance(frequencies, (float, int)):
+        signal = amplitude * np.sin(2 * np.pi * frequencies * t)
+    else:
+        signal = np.zeros_like(t)
+        for f in frequencies:
+            signal += amplitude * np.sin(2 * np.pi * f * t)
+        signal /= len(frequencies)  # normalizacja
+    return signal.astype(np.float32)
+
+def save_generated_signal(signal, sampling_rate, filename):
+    sf.write(filename, signal, sampling_rate)
+    print(f"Zapisano plik: {filename}")
+
+def generate_and_save_callback():
+    freq_str = dpg.get_value("gen_freq")
+    duration = dpg.get_value("gen_duration")
+    amplitude = dpg.get_value("gen_amp")
+    sr = dpg.get_value("gen_sr")
+    filename = dpg.get_value("gen_filename")
+
+    try:
+        frequencies = [float(f.strip()) for f in freq_str.split(",")]
+    except:
+        print("Błąd: podano nieprawidłowe częstotliwości")
+        return
+
+    signal = generate_sine_wave(frequencies, duration, amplitude, sr)
+    save_generated_signal(signal, sr, filename)
+
+def open_gen_signal_window():
+    if dpg.does_item_exist("SinWaveGeneratorWindow"):
+        dpg.delete_item("SinWaveGeneratorWindow")
+
+    with dpg.window(label="Generator sygnału", tag="SinWaveGeneratorWindow"):
+        apply_window_geometry("SinWaveGeneratorWindow", default_pos=(820, 270), default_size=(500, 250))
+        dpg.add_input_text(label="Częstotliwości [Hz] (np. 440 lub 440,880)", tag="gen_freq")
+        dpg.add_input_float(label="Czas trwania [s]", default_value=2.0, tag="gen_duration")
+        dpg.add_input_float(label="Amplituda", default_value=0.5, min_value=0.0, max_value=1.0, tag="gen_amp")
+        dpg.add_input_int(label="Częstotliwość próbkowania", default_value=44100, tag="gen_sr")
+        dpg.add_input_text(label="Nazwa pliku", default_value="generated.wav", tag="gen_filename")
+        dpg.add_button(label="Generuj i zapisz", callback=generate_and_save_callback)
+
+
+###############################################################################################################################################################
+
+#  ________   ______    ______   ________  __    __  __       __  ______   ______   __    __  ______  ________ 
+# /        | /      \  /      \ /        |/  |  /  |/  \     /  |/      | /      \ /  \  /  |/      |/        |
+# $$$$$$$$/ /$$$$$$  |/$$$$$$  |$$$$$$$$/ $$ |  $$ |$$  \   /$$ |$$$$$$/ /$$$$$$  |$$  \ $$ |$$$$$$/ $$$$$$$$/ 
+#     /$$/  $$ |__$$ |$$ \__$$/     /$$/  $$ |  $$ |$$$  \ /$$$ |  $$ |  $$ |__$$ |$$$  \$$ |  $$ |  $$ |__    
+#    /$$/   $$    $$ |$$      \    /$$/   $$ |  $$ |$$$$  /$$$$ |  $$ |  $$    $$ |$$$$  $$ |  $$ |  $$    |   
+#   /$$/    $$$$$$$$ | $$$$$$  |  /$$/    $$ |  $$ |$$ $$ $$/$$ |  $$ |  $$$$$$$$ |$$ $$ $$ |  $$ |  $$$$$/    
+#  /$$/____ $$ |  $$ |/  \__$$ | /$$/____ $$ \__$$ |$$ |$$$/ $$ | _$$ |_ $$ |  $$ |$$ |$$$$ | _$$ |_ $$ |_____ 
+# /$$      |$$ |  $$ |$$    $$/ /$$      |$$    $$/ $$ | $/  $$ |/ $$   |$$ |  $$ |$$ | $$$ |/ $$   |$$       |
+# $$$$$$$$/ $$/   $$/  $$$$$$/  $$$$$$$$/  $$$$$$/  $$/      $$/ $$$$$$/ $$/   $$/ $$/   $$/ $$$$$$/ $$$$$$$$/ 
+                                                                                                             
+###############################################################################################################################################################
+from scipy.signal import lfilter
+audio_file_noisy = None
+
+def add_noise(signal, noise_type="white", snr_db=10, sampling_rate=44100):
+    signal = np.array(signal, dtype=np.float32)
+    power_signal = np.mean(signal**2)
+    
+    if noise_type == "white":
+        noise = np.random.normal(0, 1, len(signal))
+    
+    elif noise_type == "pink": # Voss-McCartney pink noise generation (simplified)
+        b = [0.049922035, -0.095993537, 0.050612699, -0.004408786]
+        a = [1, -2.494956002, 2.017265875, -0.522189400]
+        white = np.random.randn(len(signal))
+        noise = lfilter(b, a, white)
+
+    elif noise_type == "urban":
+        low_freq = np.sin(2 * np.pi * 50 * np.linspace(0, len(signal)/sampling_rate, len(signal)))
+        noise = 0.3 * low_freq + 0.7 * np.random.normal(0, 1, len(signal))
+
+    elif noise_type == "industrial":
+        tone = np.sin(2 * np.pi * 200 * np.linspace(0, len(signal)/sampling_rate, len(signal)))
+        mod = np.random.normal(0, 1, len(signal)) * np.sin(2 * np.pi * 2 * np.linspace(0, len(signal)/sampling_rate, len(signal)))
+        noise = tone * 0.4 + mod * 0.6
+
+    elif noise_type == "impulse":
+        noise = np.zeros_like(signal)
+        impulse_count = len(signal) // 1000
+        positions = np.random.choice(len(signal), impulse_count, replace=False)
+        noise[positions] = np.random.uniform(-1, 1, size=impulse_count)
+
+    else:
+        raise ValueError(f"Nieobsługiwany typ szumu: {noise_type}")
+
+    # Skalowanie do żądanego SNR
+    power_noise = np.mean(noise**2)
+    target_noise_power = power_signal / (10 ** (snr_db / 10))
+    scaling_factor = np.sqrt(target_noise_power / (power_noise + 1e-8))
+    noise_scaled = noise * scaling_factor
+
+    return signal + noise_scaled
+
+def add_noise_callback():
+    global audio_file, audio_file_noisy
+
+    if audio_file is None:
+        print("Najpierw wczytaj sygnał!")
+        return
+
+    sampling_ratee = 44100
+    noise_type = dpg.get_value("noise_type")
+    snr_value = float(dpg.get_value("snr_value"))
+    noised_filename = dpg.get_value("noised_filename")
+
+    audio_file_noisy = add_noise(audio_file, noise_type=noise_type, snr_db=snr_value, sampling_rate=sampling_ratee)
+
+    print(f"Szum typu '{noise_type}' dodany z SNR = {snr_value} dB.")
+    save_audio_with_convert(noised_filename, sampling_ratee, audio_file_noisy )
+
+def open_add_noise_window_callback():
+    if dpg.does_item_exist("AddNoiseWindow"):
+        dpg.delete_item("AddNoiseWindow")
+
+    with dpg.window(label="Dodaj szum", tag="AddNoiseWindow"):
+        apply_window_geometry("AddNoiseWindow", default_pos=(0, 0), default_size=(500, 250))
+        dpg.add_combo(label="Rodzaj szumu", items=["white", "pink", "urban", "industrial", "impulse"], default_value="white", tag="noise_type")
+        dpg.add_slider_float(label="SNR [dB]", default_value=10.0, min_value=-10.0, max_value=80.0, tag="snr_value")
+        dpg.add_input_text(label="Nazwa pliku", default_value="noised.wav", tag="noised_filename")
+        dpg.add_button(label="Zaszum sygnał", callback=add_noise_callback)
+
+
+###############################################################################################################################################################
+
 #  __       __   ______   ______  __    __ 
 # /  \     /  | /      \ /      |/  \  /  |
 # $$  \   /$$ |/$$$$$$  |$$$$$$/ $$  \ $$ |
@@ -1574,6 +2000,30 @@ def create_audio_controls_window(windowTag, label, audio_data, sampling_rate, si
 # $$/      $$/ $$/   $$/ $$$$$$/ $$/   $$/ 
                                                                                                       
 ###############################################################################################################################################################
+
+# # Wczytaj plik z sygnałem i plik z szumem
+# signal_waveform, sr = torchaudio.load(os.path.join(CURRENT_DIR, 'atlas_ATC_around_the_world.wav'))
+# noise_waveform, sr_noise = torchaudio.load(os.path.join(CURRENT_DIR, 'atlas_ATC_around_the_world_noised_Pink.wav'))
+# filtered_waveform, sr_filtered_noise = torchaudio.load(os.path.join(CURRENT_DIR, 'atlas_ATC_around_the_world_noised_Pink_BAND_Butterworth_4_300-5000.wav'))
+
+# # Upewnij się, że oba sygnały mają tę samą długość
+# min_length = min(signal_waveform.shape[1], noise_waveform.shape[1],  filtered_waveform.shape[1])
+# signal_waveform = signal_waveform[:, :min_length]
+# noise_waveform = noise_waveform[:, :min_length]
+# filtered_waveform = filtered_waveform[:, :min_length]
+
+# filtered_waveform = filtered_waveform.repeat(2, 1)
+
+# # Oblicz SNR
+# snr_value = signal_noise_ratio(signal_waveform, noise_waveform)
+# snr_filtered_value = signal_noise_ratio(signal_waveform, filtered_waveform)
+
+# # Średnia po kanałach
+# snr_mean = snr_value.mean().item()
+# print(f"Średnie snr_value SNR (stereo): {snr_mean:.2f} dB")
+
+# snr_mean_filtered = snr_filtered_value.mean().item()
+# print(f"Średnie snr_filtered_value SNR (stereo): {snr_mean_filtered:.2f} dB")
 
 
 tableHeight = 760
@@ -1592,6 +2042,10 @@ tracked_tags = [
     "DifferenceFrequencyDomainWindow",
     "BeforeAfterFrequencyDomainWindow",
     "SNRResultWindow",
+    "SinWaveGeneratorWindow",
+    "AddNoiseWindow",
+    "OriginalAmplitudeWindow",
+    "OriginalSpectrumWindow",
 ]
 
 load_window_config()
@@ -1653,6 +2107,7 @@ with dpg.window(label="Main Window", tag="MainWindow", no_resize=False):
                 dpg.add_button(label="Filtracja LMS", callback=open_LMS_filter_popup_callback)
                 dpg.add_button(label="Filtracja falkowa", callback=open_WAVELET_filter_popup_callback)
                 dpg.add_button(label="Filtracja kalmana", callback=open_KALMAN_filter_popup_callback)
+                # dpg.add_button(label="Filtracja AI", callback=open_AI_filter_popup_callback)
 
             with dpg.collapsing_header(label="Wykresy", default_open=True):
                 dpg.add_button(label="Pokaż różnicę sygnałów", callback=show_signal_difference)
@@ -1663,6 +2118,9 @@ with dpg.window(label="Main Window", tag="MainWindow", no_resize=False):
                 dpg.add_button(label="Pokaz wykres amplitudy po filtracji", callback=show_filtered_plot_callback)
                 dpg.add_button(label="Pokaz wykres częstotliwości po filtracji", callback=show_filtered_spectrum_callback)
 
+                dpg.add_button(label="Pokaz wykres amplitudy orginalnego pliku", callback=show_original_plot_callback)
+                dpg.add_button(label="Pokaz wykres częstotliwości orginalnego pliku", callback=show_original_spectrum_callback)
+
             with dpg.collapsing_header(label="SNR", default_open=True):
                 dpg.add_button(label="Oblicz SNR", callback=show_snr_analysis)
 
@@ -1672,6 +2130,8 @@ with dpg.window(label="Main Window", tag="MainWindow", no_resize=False):
 
             with dpg.collapsing_header(label="Ustawienia", default_open=False):
                 dpg.add_button(label="Zapisz layout", tag="save_layout", callback=save_window_config_callback)
+                dpg.add_button(label="Generuj sygnał sin", callback=open_gen_signal_window)
+                dpg.add_button(label="Zaszum plik", callback=open_add_noise_window_callback)
                      
 
 dpg.setup_dearpygui()

@@ -145,8 +145,48 @@
             672
         ],
         "size": [
-            333,
-            142
+            400,
+            150
+        ]
+    },
+    "SinWaveGeneratorWindow": {
+        "pos": [
+            265,
+            1
+        ],
+        "size": [
+            1319,
+            180
+        ]
+    },
+    "AddNoiseWindow": {
+        "pos": [
+            306,
+            733
+        ],
+        "size": [
+            500,
+            128
+        ]
+    },
+    "OriginalAmplitudeWindow": {
+        "pos": [
+            883,
+            3
+        ],
+        "size": [
+            652,
+            286
+        ]
+    },
+    "OriginalSpectrumWindow": {
+        "pos": [
+            820,
+            270
+        ],
+        "size": [
+            500,
+            250
         ]
     }
 }
