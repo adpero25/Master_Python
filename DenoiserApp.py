@@ -39,7 +39,8 @@ sampling_rate_original = None  # Oryginalny, niezaszumiony sygnał - sampling ra
 window_config = {}
 audio_file = None  # Tutaj będzie zapisany wczytany plik audio, ktory bedzie podlegal odszumianiu
 sampling_rate = None
-audio_file_path = None 
+audio_file_path = None
+audio_file_filtered_save_path = None
 
 audio_file_filtered = None  # Tutaj będzie zapisany nasz przefiltrowany plik audio
 sampling_rate_filtered = None
@@ -288,6 +289,7 @@ def load_wav_file_callback(sender, app_data):
     print(audio_data)
 
     audio_file = audio_data
+    audio_file_filtered_save_path = os.path.dirname(audio_file_path)
     print(f"Załadowano plik: {audio_file_path}, dane: {audio_file.shape}")
 
     call_create_audio_play_callback()
@@ -485,13 +487,6 @@ def show_original_plot_callback():
                 dpg.add_line_series([], [], parent=y_axis)
                 dpg.add_line_series([], [], parent=y_axis)
                 dpg.add_line_series(downsampled_x.tolist(), downsampled_data.tolist(), label="Amplituda", parent=y_axis, tag=line_tag)
-
-
-def apply_line_color(series_tag, color_rgba):
-    with dpg.theme() as theme:
-        with dpg.theme_component(dpg.mvLineSeries):
-            dpg.add_theme_color(dpg.mvThemeCol_PlotLines, color_rgba, category=dpg.mvThemeCat_Plots)
-    dpg.bind_item_theme(series_tag, theme)
 
 def show_original_spectrum_callback():
     global audio_file_original, sampling_rate_original
@@ -714,7 +709,7 @@ def show_signal_difference():
     max_points = 10000
     step = max(1, len(audio_file) // max_points)
     x_data = np.arange(0, len(audio_file), step)
-    y_orig = audio_file[::step]
+    y_noised = audio_file[::step]
     y_filt = audio_file_filtered[::step]
 
     # --- Różnica w dziedzinie czasu
@@ -725,79 +720,237 @@ def show_signal_difference():
     y_diff = diff_signal[::step]
 
     # --- Różnica w dziedzinie częstotliwości
-    fft_orig = np.fft.fft(audio_file)
+    fft_noised = np.fft.fft(audio_file)
     fft_filt = np.fft.fft(audio_file_filtered)
-    fft_diff = np.abs(fft_orig) - np.abs(fft_filt) 
+    fft_diff_noised = np.abs(fft_noised) - np.abs(fft_filt) 
     freqs = np.fft.fftfreq(len(audio_file), 1 / sampling_rate)
     
     half_n = len(freqs) // 2
     freqs = freqs[:half_n]
-    fft_diff = fft_diff[:half_n]
+    fft_diff_noised = fft_diff_noised[:half_n]
 
     print(len(freqs))
-    print(len(fft_orig))
+    print(len(fft_noised))
     print(len(fft_filt))
-    print(len(fft_diff))
+    print(len(fft_diff_noised))
 
     # half_n = min(len(freqs), len(fft_orig) // 2, len(fft_filt) // 2)
     # freqs_half = freqs[:half_n]
-    fft_orig_half = np.abs(fft_orig[:half_n])
+    fft_noised_half = np.abs(fft_noised[:half_n])
     fft_filt_half = np.abs(fft_filt[:half_n])
 
-    window_tag = "BeforeAfterPlotWindow"
-    if dpg.does_item_exist(window_tag):
-        dpg.delete_item(window_tag)
+    y_original = None
+    y_diff_original = None
+    fft_original_half = None
+    fft_diff_original = None
 
-    with dpg.window(label="Sygnał przed i po filtracji", tag=window_tag, width=BeforeAfterWindowAmplitudeWidth, height=BeforeAfterWindowAmplitudeHeight):
-        apply_window_geometry(window_tag, default_pos=(820, 10), default_size=(600, 300))
+    if audio_file_original is not None and len(audio_file_original) == len(audio_file): 
+        y_original = audio_file_original[::step]
+        
+        diff_signal_original = np.array(audio_file_original) - np.array(audio_file_filtered)
+        y_diff_original = diff_signal_original[::step]
 
-        with dpg.plot(label="Amplituda w czasie", height=BeforeAfterWindowAmplitudeHeight, width=BeforeAfterWindowAmplitudeWidth):
+        fft_original = np.fft.fft(audio_file_original)
+        fft_diff_original = np.abs(fft_original) - np.abs(fft_filt) 
+        fft_original_half = np.abs(fft_original[:half_n])
+
+    window_tag_ABA = "BeforeAfterPlotWindow"
+    if dpg.does_item_exist(window_tag_ABA):
+        dpg.delete_item(window_tag_ABA)
+
+    with dpg.window(label="Amplituda sygnału", tag=window_tag_ABA, width=BeforeAfterWindowAmplitudeWidth, height=BeforeAfterWindowAmplitudeHeight):
+        apply_window_geometry(window_tag_ABA, default_pos=(820, 10), default_size=(600, 300))
+
+        with dpg.plot(tag=f"{window_tag_ABA}Plot", parent=window_tag_ABA, height=BeforeAfterWindowAmplitudeHeight, width=BeforeAfterWindowAmplitudeWidth):
             dpg.add_plot_legend()
-            dpg.add_plot_axis(dpg.mvXAxis, label="Próbki")
+            dpg.add_plot_axis(dpg.mvXAxis, label="Numer próbki")
             with dpg.plot_axis(dpg.mvYAxis, label="Amplituda") as y_axis:
-                dpg.add_line_series(x_data.tolist(), y_orig.tolist(), label="Oryginalny", parent=y_axis)
+                dpg.add_line_series(x_data.tolist(), y_noised.tolist(), label="Zaszumiony", parent=y_axis)
                 dpg.add_line_series(x_data.tolist(), y_filt.tolist(), label="Po filtracji", parent=y_axis)
+                if y_original is not None:
+                    dpg.add_line_series(x_data.tolist(), y_original.tolist(), label="Oryginalny", parent=y_axis)
 
-    window_tag = "DifferenceTimeDomainWindow"
-    if dpg.does_item_exist(window_tag):
-        dpg.delete_item(window_tag)
+        # Add popup context menu to the plot
+        with dpg.popup(parent=f"{window_tag_ABA}Plot", mousebutton=dpg.mvMouseButton_Right):
+            dpg.add_text("Plot Options")
+            dpg.add_button(label="Save Plot", callback=lambda: save_plot_fullscreen(f"{window_tag_ABA}Plot"))
 
-    with dpg.window(label="Różnica sygnałów w czasie", tag=window_tag, width=DifferenceAmplitudeWindowWidth, height=DifferenceAmplitudeWindowHeight):
-        apply_window_geometry(window_tag, default_pos=(820, 330), default_size=(600, 300))
 
-        with dpg.plot(label="Różnica amplitudy", height=DifferenceAmplitudeWindowHeight, width=DifferenceAmplitudeWindowWidth):
+    window_tag_FDiff = "DifferenceTimeDomainWindow"
+    if dpg.does_item_exist(window_tag_FDiff):
+        dpg.delete_item(window_tag_FDiff)
+
+    with dpg.window(label="Różnica amplitudy", tag=window_tag_FDiff, width=DifferenceAmplitudeWindowWidth, height=DifferenceAmplitudeWindowHeight):
+        apply_window_geometry(window_tag_FDiff, default_pos=(820, 330), default_size=(600, 300))
+
+        with dpg.plot(tag=f"{window_tag_FDiff}Plot", height=DifferenceAmplitudeWindowHeight, width=DifferenceAmplitudeWindowWidth):
             dpg.add_plot_legend()
-            dpg.add_plot_axis(dpg.mvXAxis, label="Próbki")
-            with dpg.plot_axis(dpg.mvYAxis, label="Różnica amplitud (oryginal - filtered)") as y_axis:
-                dpg.add_line_series(x_data.tolist(), y_diff.tolist(), label="Różnica", parent=y_axis)
+            dpg.add_plot_axis(dpg.mvXAxis, label="Numer próbki")
+            with dpg.plot_axis(dpg.mvYAxis, label="Różnica amplitud") as y_axis:
+                dpg.add_line_series(x_data.tolist(), y_diff.tolist(), label="Różnica N-F", parent=y_axis)
+                if y_diff_original is not None:
+                    dpg.add_line_series(x_data.tolist(), y_diff_original.tolist(), label="Różnica O-F", parent=y_axis)
 
-    window_tag = "BeforeAfterFrequencyDomainWindow"
-    if dpg.does_item_exist(window_tag):
-        dpg.delete_item(window_tag)
+        # Add popup context menu to the plot
+        with dpg.popup(parent=f"{window_tag_FDiff}Plot", mousebutton=dpg.mvMouseButton_Right):
+            dpg.add_text("Plot Options")
+            dpg.add_button(label="Save Plot", callback=lambda: save_plot_fullscreen(f"{window_tag_FDiff}Plot"))
 
-    with dpg.window(label="Widmo przed i po filtracji", tag=window_tag, width=BeforeAfterWindowAmplitudeWidth, height=BeforeAfterWindowAmplitudeHeight):
-        apply_window_geometry(window_tag, default_pos=(820, 10), default_size=(600, 300))
 
-        with dpg.plot(label="Widmo przed i po filtracji", height=BeforeAfterWindowAmplitudeHeight, width=BeforeAfterWindowAmplitudeWidth):
+    window_tag_FBA = "BeforeAfterFrequencyDomainWindow"
+    if dpg.does_item_exist(window_tag_FBA):
+        dpg.delete_item(window_tag_FBA)
+
+    with dpg.window(label="Widmo sygnału", tag=window_tag_FBA, width=BeforeAfterWindowAmplitudeWidth, height=BeforeAfterWindowAmplitudeHeight):
+        apply_window_geometry(window_tag_FBA, default_pos=(820, 10), default_size=(600, 300))
+
+        with dpg.plot(tag=f"{window_tag_FBA}Plot", height=BeforeAfterWindowAmplitudeHeight, width=BeforeAfterWindowAmplitudeWidth):
             dpg.add_plot_legend()
             dpg.add_plot_axis(dpg.mvXAxis, label="Częstotliwość [Hz]")
             with dpg.plot_axis(dpg.mvYAxis, label="Amplituda") as y_axis:
-                dpg.add_line_series(freqs.tolist(), fft_orig_half.tolist(), label="Oryginalne widmo", parent=y_axis)
+                dpg.add_line_series(freqs.tolist(), fft_noised_half.tolist(), label="Zaszumione widmo", parent=y_axis)
                 dpg.add_line_series(freqs.tolist(), fft_filt_half.tolist(), label="Widmo po filtracji", parent=y_axis)
+                if fft_original_half is not None:
+                    dpg.add_line_series(freqs.tolist(), fft_original_half.tolist(), label="Oryginalne widmo", parent=y_axis)
 
-    spec_window_tag = "DifferenceFrequencyDomainWindow"
-    if dpg.does_item_exist(spec_window_tag):
-        dpg.delete_item(spec_window_tag)
+        # Add popup context menu to the plot
+        with dpg.popup(parent=f"{window_tag_FBA}Plot", mousebutton=dpg.mvMouseButton_Right):
+            dpg.add_text("Plot Options")
+            dpg.add_button(label="Save Plot", callback=lambda: save_plot_fullscreen(f"{window_tag_FBA}Plot"))
 
-    with dpg.window(label="Różnica widmowa", tag=spec_window_tag, width=DifferenceSpectrumWindowWidth, height=DifferenceSpectrumWindowHeight):
-        apply_window_geometry(spec_window_tag, default_pos=(820, 660), default_size=(600, 300))
 
-        with dpg.plot(label="Różnica widm", height=DifferenceSpectrumWindowHeight, width=DifferenceSpectrumWindowWidth):
+    window_tag_FDiff = "DifferenceFrequencyDomainWindow"
+    if dpg.does_item_exist(window_tag_FDiff):
+        dpg.delete_item(window_tag_FDiff)
+
+    with dpg.window(label="Różnica widm", tag=window_tag_FDiff, width=DifferenceSpectrumWindowWidth, height=DifferenceSpectrumWindowHeight):
+        apply_window_geometry(window_tag_FDiff, default_pos=(820, 660), default_size=(600, 300))
+
+        with dpg.plot(tag=f"{window_tag_FDiff}Plot", height=DifferenceSpectrumWindowHeight, width=DifferenceSpectrumWindowWidth):
+            dpg.add_plot_legend()
             dpg.add_plot_axis(dpg.mvXAxis, label="Częstotliwość [Hz]")
-            with dpg.plot_axis(dpg.mvYAxis, label="Różnica widm (oryginal - filtered)") as y_axis:
-                dpg.add_line_series(freqs.tolist(), fft_diff.tolist(), label="Δ widmo", parent=y_axis)
+            with dpg.plot_axis(dpg.mvYAxis, label="Różnica widm") as y_axis:
+                dpg.add_line_series(freqs.tolist(), fft_diff_noised.tolist(), label="N - F", parent=y_axis)
+                if fft_diff_original is not None:
+                    dpg.add_line_series(freqs.tolist(), fft_diff_original.tolist(), label="O - F", parent=y_axis)
+
+        # Add popup context menu to the plot
+        with dpg.popup(parent=f"{window_tag_FDiff}Plot", mousebutton=dpg.mvMouseButton_Right):
+            dpg.add_text("Plot Options")
+            dpg.add_button(label="Save Plot", callback=lambda: save_plot_fullscreen(f"{window_tag_FDiff}Plot"))
 
 
+
+import time
+import uuid
+
+def save_plot_to_image(plot_tag: str, filename: str = "saved_plot.png"):
+     # Sprawdź, czy istnieje tymczasowe okno do zapisu i usuń jeśli tak
+    if dpg.does_item_exist("temp_save_window"):
+        dpg.delete_item("temp_save_window", children_only=True)
+
+    # Stwórz tymczasowe okno w istniejącym viewport
+    with dpg.window(label="Temp Window for Plot Save", tag="temp_save_window", width=800, height=600, show=True, pos=(0, 0),):
+        # Pobierz dzieci wykresu oryginalnego
+        children = dpg.get_item_children(plot_tag, slot=1)  # 1 = content
+
+        # Pobierz osie
+        axes = [c for c in children if "mvPlotAxis" in dpg.get_item_type(c)]
+        x_axis = None
+        y_axis = None
+        for ax in axes:
+            config = dpg.get_item_configuration(ax)
+            if config.get("axis_type", None) == dpg.mvXAxis:
+                x_axis = ax
+            elif config.get("axis_type", None) == dpg.mvYAxis:
+                y_axis = ax
+
+        # Pobierz serie linii
+        series = [c for c in children if "mvLineSeries" in dpg.get_item_type(c)]
+
+        # Tworzymy nowy wykres w tym oknie
+        with dpg.plot(label="Temp Plot", height=580, width=780, tag="temp_plot"):
+            dpg.add_plot_legend()
+            dpg.add_plot_axis(dpg.mvXAxis, label=dpg.get_item_configuration(x_axis)["label"] if x_axis else "X")
+            with dpg.plot_axis(dpg.mvYAxis, label=dpg.get_item_configuration(y_axis)["label"] if y_axis else "Y") as new_y_axis:
+                for s in series:
+                    data = dpg.get_value(s)
+                    label = dpg.get_item_configuration(s).get("label", "series")
+                    # Jeśli dane są krotkami (x, y), rozpakuj je
+                    if isinstance(data, (tuple, list)) and len(data) == 2:
+                        dpg.add_line_series(data[0], data[1], label=label, parent=new_y_axis)
+                    else:
+                        dpg.add_line_series(list(range(len(data))), data, label=label, parent=new_y_axis)
+
+    time.sleep(0.5)
+
+    # Ręczne wyrenderowanie ramki i zapis obrazu
+    dpg.render_dearpygui_frame()
+    dpg.set_primary_window("temp_save_window", True)
+    time.sleep(0.5)
+
+    # Zapis framebuffer do pliku
+    dpg.output_frame_buffer(filename)
+    print(f"Wykres zapisany do pliku: {filename}")
+    time.sleep(0.5)
+
+    # Ukryj i usuń tymczasowe okno
+    dpg.hide_item("temp_save_window")
+    dpg.delete_item("temp_save_window")
+
+def save_plot_fullscreen(plot_tag: str, filename="saved_plot.png"):
+    # Find parent window of the plot
+    plot_info = dpg.get_item_info(plot_tag)
+    if plot_info is None:
+        print(f"Plot tag {plot_tag} not found!")
+        return
+    
+    parent = dpg.get_item_parent(plot_tag)
+    window_tag = None
+    
+    while parent:
+        parent_info = dpg.get_item_info(parent)
+        if parent_info is None:
+            print(f"Parent info is None for {parent}")
+            break
+        
+        print(f"Parent {parent} type: {parent_info.get('type')}")
+        
+        if parent_info.get("type") == "mvAppItemType::mvWindowAppItem":
+            window_tag = parent
+            break
+        
+        parent = parent_info.get("parent")
+    
+    if window_tag is None:
+        print("Plot is not inside a window!")
+        return
+
+    #focus window to bring it to the top    
+    dpg.focus_item(window_tag)
+
+    # Save original window size and pos
+    orig_pos = dpg.get_item_pos(window_tag)
+    orig_size = dpg.get_item_width(window_tag), dpg.get_item_height(window_tag)
+
+    # Get viewport size (fullscreen)
+    vp_width = dpg.get_viewport_width()
+    vp_height = dpg.get_viewport_height()
+    
+    # Resize window to fullscreen viewport
+    dpg.configure_item(window_tag, pos=(0, 0), width=vp_width, height=vp_height)
+    
+    # Need to force render update so framebuffer captures updated window
+    dpg.render_dearpygui_frame()
+    
+    # Output framebuffer (captures the whole window)
+    dpg.output_frame_buffer(filename)
+    dpg.render_dearpygui_frame()
+    
+    # Restore window size and position
+    dpg.configure_item(window_tag, pos=orig_pos, width=orig_size[0], height=orig_size[1])
+    
+    print(f"Saved plot image to {filename}")
 
 ###############################################################################################################################################################
 
@@ -863,7 +1016,7 @@ def apply_LOWPASS_filter_callback():
     thd_low = calculate_thd(audio_file_filtered, new_sampling_rate)
 
     file_original_path = Path(audio_file_path)
-    file_new_path = file_original_path.with_stem(f"{Path(audio_file_path).stem}_LOW_{filter_type}_{filter_order}_{cutoff_freq}")
+    file_new_path =  os.path.join(os.path.dirname(audio_file_path), file_original_path.with_stem(f"{Path(audio_file_path).stem}_LOW_{filter_type}_{filter_order}_{cutoff_freq}"))
     
     print(f"Zastosowano filtr: {filter_type}, rząd: {filter_order}, odcięcie: {cutoff_freq} Hz, THD before: {thd_before} THD after: {thd_low}")
 
@@ -951,7 +1104,7 @@ def apply_HIPASS_filter_callback():
     print(f"Zastosowano filtr: {filter_type}, rząd: {filter_order}, odcięcie: {cutoff_freq} Hz, THD before: {thd_before}, THD: {thd_high}")
 
     file_original_path = Path(audio_file_path)
-    file_new_path = file_original_path.with_stem(f"{Path(audio_file_path).stem}_HIGH_{filter_type}_{filter_order}_{cutoff_freq}")
+    file_new_path =  os.path.join(os.path.dirname(audio_file_path), file_original_path.with_stem(f"{Path(audio_file_path).stem}_HIGH_{filter_type}_{filter_order}_{cutoff_freq}"))
     
     show_filtered_plot_callback()
     show_filtered_spectrum_callback()
@@ -1038,7 +1191,7 @@ def apply_BANDPASS_filter_callback():
     print(f"Zastosowano filtr: {filter_type}, rząd: {filter_order}, odcięcie dolne: {cutoff_low}, odcięcie górne: {cutoff_high} Hz, THD before: {thd_before}, THD: {thd_band}")
 
     file_original_path = Path(audio_file_path)
-    file_new_path = file_original_path.with_stem(f"{Path(audio_file_path).stem}_BAND_{filter_type}_{filter_order}_{cutoff_low}-{cutoff_high}")
+    file_new_path =  os.path.join(os.path.dirname(audio_file_path), file_original_path.with_stem(f"{Path(audio_file_path).stem}_BAND_{filter_type}_{filter_order}_{cutoff_low}-{cutoff_high}"))
     
     show_filtered_plot_callback()
     show_filtered_spectrum_callback()
@@ -1143,7 +1296,7 @@ def apply_LMS_filter_callback():
     stop_processing_indicator()
 
     file_original_path = Path(audio_file_path)
-    file_new_path = file_original_path.with_stem(f"{Path(audio_file_path).stem}_LMS_{filter_length}_{mu}")
+    file_new_path =  os.path.join(os.path.dirname(audio_file_path), file_original_path.with_stem(f"{Path(audio_file_path).stem}_LMS_{filter_length}_{mu}"))
     
     show_filtered_plot_callback()
     show_filtered_spectrum_callback()
@@ -1219,7 +1372,7 @@ def apply_WAVELET_filter_callback():
     stop_processing_indicator()
 
     file_original_path = Path(audio_file_path)
-    file_new_path = file_original_path.with_stem(f"{Path(audio_file_path).stem}_WAVELET_{wavelet_name}_{decomposition_level}_{threshold}")
+    file_new_path =  os.path.join(os.path.dirname(audio_file_path), file_original_path.with_stem(f"{Path(audio_file_path).stem}_WAVELET_{wavelet_name}_{decomposition_level}_{threshold}"))
         
     show_filtered_plot_callback()
     show_filtered_spectrum_callback()
@@ -1310,8 +1463,8 @@ def apply_KALMAN_filter_callback():
     stop_processing_indicator()
 
     file_original_path = Path(audio_file_path)
-    file_new_path = file_original_path.with_stem(f"{Path(audio_file_path).stem}_KALMAN_{Q}_{R}")
-    
+    file_new_path = os.path.join(os.path.dirname(audio_file_path), file_original_path.with_stem(f"{Path(audio_file_path).stem}_KALMAN_{Q}_{R}")) 
+
     show_filtered_plot_callback()
     show_filtered_spectrum_callback()
     call_create_audio_filtered_play_callback()
@@ -1972,18 +2125,27 @@ def add_noise_callback():
 
     audio_file_noisy = add_noise(audio_file, noise_type=noise_type, snr_db=snr_value, sampling_rate=sampling_ratee)
 
+    filename = os.path.join(os.path.dirname(noised_filename), f"{Path(noised_filename).stem}_{noise_type.upper()}_{str(snr_value)}.wav")
+
     print(f"Szum typu '{noise_type}' dodany z SNR = {snr_value} dB.")
-    save_audio_with_convert(noised_filename, sampling_ratee, audio_file_noisy )
+    save_audio_with_convert(filename, sampling_ratee, audio_file_noisy)
 
 def open_add_noise_window_callback():
     if dpg.does_item_exist("AddNoiseWindow"):
         dpg.delete_item("AddNoiseWindow")
 
+    # print(Path(audio_file_path))
+    # print(Path(audio_file_path).stem)
+    # print(os.path.dirname(audio_file_path))
+
+    filename = os.path.join(os.path.dirname(audio_file_path), f"{Path(audio_file_path).stem}_noised.wav")
+
     with dpg.window(label="Dodaj szum", tag="AddNoiseWindow"):
         apply_window_geometry("AddNoiseWindow", default_pos=(0, 0), default_size=(500, 250))
         dpg.add_combo(label="Rodzaj szumu", items=["white", "pink", "urban", "industrial", "impulse"], default_value="white", tag="noise_type")
-        dpg.add_slider_float(label="SNR [dB]", default_value=10.0, min_value=-10.0, max_value=80.0, tag="snr_value")
-        dpg.add_input_text(label="Nazwa pliku", default_value="noised.wav", tag="noised_filename")
+        dpg.add_input_double(label="SNR [dB]", default_value=10.0, min_value=-10.0, max_value=40.0, step=0.1, tag="snr_value")
+        dpg.add_input_text(label="Nazwa pliku", default_value=filename, tag="noised_filename")
+        dpg.add_button(label="Wybierz plik", callback=lambda: open_save_file_dialog(filename))
         dpg.add_button(label="Zaszum sygnał", callback=add_noise_callback)
 
 
@@ -2031,6 +2193,7 @@ tableWidth = 760
 
 tracked_tags = [
     "MainWindow",
+    "BenchmarkWindow"
     "AmplitudeWindow",
     "AmplitudeWindowFiltered",
     "SpectrumWindow",
@@ -2057,6 +2220,11 @@ def save_window_config_callback():
 
     save_window_config()
 
+def save_noised_file_dialog_callback(sender, app_data):
+    # app_data zawiera wybrane pliki, np. {'file_path_name': ..., 'file_name': ..., 'current_path': ...}
+    selected_path = app_data['file_path_name']  # pełna ścieżka
+    # Ustaw wartość w input_text o tagu "noised_filename"
+    dpg.set_value("noised_filename", selected_path)
 
 def call_create_audio_play_callback():
     create_audio_controls_window("InputSignalPlaybackWindow", "Odtwarzanie wczytanego pliku", audio_file, sampling_rate, "input")
@@ -2069,6 +2237,9 @@ def open_load_dialog():
 
 def open_load_original_dialog():
     dpg.show_item("load_original_wav_file_dialog")
+
+def open_save_file_dialog(path):
+    dpg.show_item("save_wav_file_dialog")
 
 with dpg.file_dialog(directory_selector=False,
                      show=False, 
@@ -2092,9 +2263,19 @@ with dpg.file_dialog(directory_selector=False,
     dpg.add_file_extension(".wav", color=(150, 255, 150, 255))
     dpg.add_file_extension(".*")
 
+with dpg.file_dialog(directory_selector=False, 
+                     show=False, 
+                     modal=True, 
+                     width=900,
+                     height=500,
+                     label="Zapisywanie pliku .wav", 
+                     callback=save_noised_file_dialog_callback, 
+                     tag="save_wav_file_dialog"):
+    dpg.add_file_extension(".wav", color=(150, 255, 150, 255))
+    dpg.add_file_extension(".*")
+
 with dpg.window(label="Main Window", tag="MainWindow", no_resize=False):    
     apply_window_geometry("MainWindow", default_pos=(0, 0), default_size=(tableWidth, tableHeight))
-    dpg.maximize_viewport()
     with dpg.group(horizontal=True):
         with dpg.child_window(autosize_y=True):
             dpg.add_button(label="Wczytaj plik oryginal (.wav)", callback=open_load_original_dialog)
@@ -2136,6 +2317,8 @@ with dpg.window(label="Main Window", tag="MainWindow", no_resize=False):
 
 dpg.setup_dearpygui()
 dpg.show_viewport()
+dpg.toggle_viewport_fullscreen()
+dpg.maximize_viewport()
 
 # Custom main loop
 while dpg.is_dearpygui_running():

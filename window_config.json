@@ -6,7 +6,7 @@
         ],
         "size": [
             615,
-            285
+            231
         ]
     },
     "MainWindow": {
@@ -16,7 +16,7 @@
         ],
         "size": [
             265,
-            574
+            647
         ]
     },
     "FrequencyWindow": {
@@ -36,7 +36,7 @@
         ],
         "size": [
             652,
-            285
+            231
         ]
     },
     "FrequencyWindowFiltered": {
@@ -52,11 +52,11 @@
     "SpectrumWindowFiltered": {
         "pos": [
             884,
-            288
+            236
         ],
         "size": [
             651,
-            286
+            230
         ]
     },
     "BenchmarkWindow": {
@@ -72,51 +72,51 @@
     "SpectrumWindow": {
         "pos": [
             268,
-            288
+            236
         ],
         "size": [
-            616,
-            286
+            615,
+            230
         ]
     },
     "InputSignalPlaybackWindow": {
         "pos": [
             268,
-            578
+            469
         ],
         "size": [
-            500,
+            615,
             107
         ]
     },
     "FilteredSignalPlaybackWindow": {
         "pos": [
-            884,
-            576
+            885,
+            469
         ],
         "size": [
-            500,
-            108
+            650,
+            107
         ]
     },
     "DifferenceFrequencyDomainWindow": {
         "pos": [
-            269,
-            732
+            268,
+            73
         ],
         "size": [
             1266,
-            258
+            446
         ]
     },
     "DifferenceTimeDomainWindow": {
         "pos": [
             269,
-            493
+            50
         ],
         "size": [
             1266,
-            258
+            444
         ]
     },
     "BeforeAfterPlotWindow": {
@@ -126,27 +126,27 @@
         ],
         "size": [
             1267,
-            259
+            350
         ]
     },
     "BeforeAfterFrequencyDomainWindow": {
         "pos": [
             268,
-            246
+            25
         ],
         "size": [
             1266,
-            260
+            442
         ]
     },
     "SNRResultWindow": {
         "pos": [
-            0,
-            672
+            268,
+            579
         ],
         "size": [
-            400,
-            150
+            313,
+            185
         ]
     },
     "SinWaveGeneratorWindow": {
@@ -161,12 +161,12 @@
     },
     "AddNoiseWindow": {
         "pos": [
-            306,
-            733
+            268,
+            579
         ],
         "size": [
-            500,
-            128
+            615,
+            147
         ]
     },
     "OriginalAmplitudeWindow": {
@@ -176,17 +176,17 @@
         ],
         "size": [
             652,
-            286
+            230
         ]
     },
     "OriginalSpectrumWindow": {
         "pos": [
-            820,
-            270
+            885,
+            236
         ],
         "size": [
-            500,
-            250
+            649,
+            230
         ]
     }
 }
