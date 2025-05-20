@@ -5,7 +5,7 @@
             2
         ],
         "size": [
-            615,
+            830,
             231
         ]
     },
@@ -31,11 +31,11 @@
     },
     "AmplitudeWindowFiltered": {
         "pos": [
-            883,
+            1100,
             2
         ],
         "size": [
-            652,
+            820,
             231
         ]
     },
@@ -51,22 +51,22 @@
     },
     "SpectrumWindowFiltered": {
         "pos": [
-            884,
+            1100,
             236
         ],
         "size": [
-            651,
+            820,
             230
         ]
     },
     "BenchmarkWindow": {
         "pos": [
             0,
-            577
+            650
         ],
         "size": [
-            265,
-            108
+            320,
+            309
         ]
     },
     "SpectrumWindow": {
@@ -75,7 +75,7 @@
             236
         ],
         "size": [
-            615,
+            830,
             230
         ]
     },
@@ -85,38 +85,18 @@
             469
         ],
         "size": [
-            615,
+            830,
             107
         ]
     },
     "FilteredSignalPlaybackWindow": {
         "pos": [
-            885,
+            1100,
             469
         ],
         "size": [
-            650,
+            820,
             107
-        ]
-    },
-    "DifferenceFrequencyDomainWindow": {
-        "pos": [
-            268,
-            73
-        ],
-        "size": [
-            1266,
-            446
-        ]
-    },
-    "DifferenceTimeDomainWindow": {
-        "pos": [
-            269,
-            50
-        ],
-        "size": [
-            1266,
-            444
         ]
     },
     "BeforeAfterPlotWindow": {
@@ -125,28 +105,48 @@
             2
         ],
         "size": [
-            1267,
-            350
+            1651,
+            403
+        ]
+    },
+    "DifferenceAmplitudeWindow": {
+        "pos": [
+            268,
+            26
+        ],
+        "size": [
+            1651,
+            444
         ]
     },
     "BeforeAfterFrequencyDomainWindow": {
         "pos": [
             268,
-            25
+            50
         ],
         "size": [
-            1266,
+            1651,
             442
+        ]
+    },
+    "DifferenceFrequencyDomainWindow": {
+        "pos": [
+            268,
+            73
+        ],
+        "size": [
+            1651,
+            446
         ]
     },
     "SNRResultWindow": {
         "pos": [
-            268,
-            579
+            0,
+            672
         ],
         "size": [
-            313,
-            185
+            400,
+            150
         ]
     },
     "SinWaveGeneratorWindow": {
