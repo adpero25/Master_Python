@@ -16,6 +16,7 @@ import time
 import librosa
 matplotlib.use('Agg')
 from scipy.io.wavfile import read, write
+from scipy.stats import pearsonr
 from scipy.signal import butter, bessel, cheby1, filtfilt, freqz, lfilter, sosfilt
 from scipy.fft import fft, fftfreq
 from pathlib import Path
@@ -118,6 +119,8 @@ def stop_benchmark_and_show_results():
     snr_segmental_after = None
     snr_cb_before = None
     snr_cb_after = None
+    statistics_before = None
+    statistics_after = None
 
     if (audio_file_original is not None and 
         audio_file is not None and 
@@ -135,6 +138,9 @@ def stop_benchmark_and_show_results():
         
         snr_cb_before = compute_critical_band_snr(audio_file_original[:min_len], audio_file[:min_len], sampling_rate_filtered)
         snr_cb_after = compute_critical_band_snr(audio_file_original[:min_len], audio_file_filtered[:min_len], sampling_rate_filtered)
+
+        statistics_before = calculate_signal_metrics(audio_file_original[:min_len], audio_file[:min_len])
+        statistics_after = calculate_signal_metrics(audio_file_original[:min_len], audio_file_filtered[:min_len])
     else:
         if audio_file is None or audio_file_filtered is None:
             print("Brak danych: zaladuj plik wejsciowy i przefiltruj go.")
@@ -144,24 +150,75 @@ def stop_benchmark_and_show_results():
     # Tworzymy popup
     with dpg.window(tag=benchmark_window_tag, label="Statystyki filtracji"):
         apply_window_geometry(benchmark_window_tag, default_pos=(820, 10), default_size=(500, 250))
-        dpg.add_text(f"Czas filtracji: {elapsed_time:.3f} sekund")
-        dpg.add_text(f"Zmiana zuzycia CPU: {cpu_usage_diff:.2f}%")
-        dpg.add_text(f"Zmiana uzycia RAM: {memory_usage_diff:+.2f} MB")
-        dpg.add_text(f"THD: {thd_value:+.2f} %")
 
-        # Dodajemy wyniki SNR, jeśli istnieja
-        if (audio_file_original is not None and 
-            audio_file is not None and 
-            audio_file_filtered is not None):
+        value_color = [0, 255, 0]  # Kolor wartości
 
-            dpg.add_text(f"SNR przed filtracja (before): {snr_before:.2f} dB")
-            dpg.add_text(f"SNR po filtracji (after): {snr_after:.2f} dB")
-            dpg.add_text(f"Średni SNR (before): {snr_bf:.2f} dB")
-            dpg.add_text(f"Średni SNR (after): {snr_af:.2f} dB")
-            dpg.add_text(f"SNR segmentowy (before): {snr_segmental_before:.2f} dB")
-            dpg.add_text(f"SNR segmentowy (after): {snr_segmental_after:.2f} dB")
-            dpg.add_text(f"SNR pasm krytycznych (before): {snr_cb_before:.2f} dB")
-            dpg.add_text(f"SNR pasm krytycznych (after): {snr_cb_after:.2f} dB")
+        with dpg.group(horizontal=True):
+            # Kolumna 1: Zasoby
+            with dpg.group():
+                dpg.add_text("Zasoby sprzetowe i THD", color=[200, 200, 255])
+                with dpg.group(horizontal=True):
+                    with dpg.group():
+                        dpg.add_text("Czas filtracji:")
+                        dpg.add_text("Zmiana uzycia CPU:")
+                        dpg.add_text("Zmiana uzycia RAM:")
+                        dpg.add_text("THD:")
+                    with dpg.group():
+                        dpg.add_text(f"{elapsed_time:.3f} s", color=value_color)
+                        dpg.add_text(f"{memory_usage_diff:+.2f} MB", color=value_color)
+                        dpg.add_text(f"{cpu_usage_diff:.2f}%", color=value_color)
+                        dpg.add_text(f"{thd_value:+.2f}%", color=value_color)
+
+            if (audio_file_original is not None and 
+                audio_file is not None and 
+                audio_file_filtered is not None):
+
+                # Kolumna 2: SNR
+                with dpg.group():
+                    dpg.add_text("SNR", color=[200, 255, 200])
+                    with dpg.group(horizontal=True):
+                        with dpg.group():
+                            dpg.add_text("SNR przed filtracja (before):")
+                            dpg.add_text("SNR po filtracji (after):")
+                            # dpg.add_text("Sredni SNR (before):")
+                            # dpg.add_text("Sredni SNR (after):")
+                            dpg.add_text("SNR segmentowy (before):")
+                            dpg.add_text("SNR segmentowy (after):")
+                            dpg.add_text("SNR pasm krytycznych (before):")
+                            dpg.add_text("SNR pasm krytycznych (after):")
+                            dpg.add_text("PSNR (before):")
+                            dpg.add_text("PSNR (after):")
+                        with dpg.group():
+                            dpg.add_text(f"{snr_before:.2f} dB", color=value_color)
+                            dpg.add_text(f"{snr_after:.2f} dB", color=value_color)
+                            # dpg.add_text(f"{snr_bf:.2f} dB", color=value_color)
+                            # dpg.add_text(f"{snr_af:.2f} dB", color=value_color)
+                            dpg.add_text(f"{snr_segmental_before:.2f} dB", color=value_color)
+                            dpg.add_text(f"{snr_segmental_after:.2f} dB", color=value_color)
+                            dpg.add_text(f"{snr_cb_before:.2f} dB", color=value_color)
+                            dpg.add_text(f"{snr_cb_after:.2f} dB", color=value_color)
+                            dpg.add_text(f"{statistics_before['PSNR']:.2f} dB", color=value_color)
+                            dpg.add_text(f"{statistics_after['PSNR']:.2f} dB", color=value_color)
+
+                # Kolumna 3: MSE, NRMSE, korelacja
+                with dpg.group():
+                    dpg.add_text("Bledy i korelacja", color=[255, 200, 200])
+                    with dpg.group(horizontal=True):
+                        with dpg.group():
+                            dpg.add_text("MSE (before):")
+                            dpg.add_text("MSE (after):")
+                            dpg.add_text("NRMSE (before):")
+                            dpg.add_text("NRMSE (after):")
+                            dpg.add_text("Correlation (before):")
+                            dpg.add_text("Correlation (after):")
+                        with dpg.group():
+                            dpg.add_text(f"{statistics_before['MSE']:.2f}", color=value_color)
+                            dpg.add_text(f"{statistics_after['MSE']:.2f}", color=value_color)
+                            dpg.add_text(f"{statistics_before['NRMSE']:.2f}", color=value_color)
+                            dpg.add_text(f"{statistics_after['NRMSE']:.2f}", color=value_color)
+                            dpg.add_text(f"{statistics_before['Correlation Coefficient']:.2f}", color=value_color)
+                            dpg.add_text(f"{statistics_after['Correlation Coefficient']:.2f}", color=value_color)
+
 
     # Resetuj zmienne
     filter_start_time = None
@@ -196,6 +253,101 @@ def calculate_thd(signal, fs, fundamental_freq=None):
 
     return thd * 100  # jako %
 
+
+from sklearn.metrics import mean_squared_error, root_mean_squared_error
+
+def calculate_MSE(reference_signal, test_signal):
+    reference_signal = np.asarray(reference_signal, dtype=np.float64)
+    test_signal = np.asarray(test_signal, dtype=np.float64)
+
+    if len(reference_signal) != len(test_signal):
+        raise ValueError("Sygnały musza mieć tę sama długość!")
+
+    mse = mean_squared_error(reference_signal, test_signal)
+    print(f"MSE: {mse}")
+
+    return mse
+
+def calculate_RMSE(reference_signal, test_signal):
+    reference_signal = np.asarray(reference_signal, dtype=np.float64)
+    test_signal = np.asarray(test_signal, dtype=np.float64)
+
+    if len(reference_signal) != len(test_signal):
+        raise ValueError("Sygnały musza mieć tę sama długość!")
+
+    rmse = root_mean_squared_error(reference_signal, test_signal)
+    print(f"RMSE: {rmse}")
+
+    return rmse
+
+def calculate_NRMSE(reference_signal, test_signal):
+    reference_signal = np.asarray(reference_signal, dtype=np.float64)
+    test_signal = np.asarray(test_signal, dtype=np.float64)
+
+    if len(reference_signal) != len(test_signal):
+        raise ValueError("Sygnały musza mieć tę sama długość!")
+
+    nrmse = root_mean_squared_error(reference_signal, test_signal) / (np.max(reference_signal) - np.min(reference_signal) + 1e-12)
+    print(f"NRMSE: {nrmse}")
+
+    return nrmse
+
+def calculate_PSNR(reference_signal, test_signal):
+    reference_signal = np.asarray(reference_signal, dtype=np.float64)
+    test_signal = np.asarray(test_signal, dtype=np.float64)
+
+    if len(reference_signal) != len(test_signal):
+        raise ValueError("Sygnały musza mieć tę sama długość!")
+
+    mse = calculate_MSE(reference_signal, test_signal)
+
+    # PSNR (Peak Signal-to-Noise Ratio)
+    peak = np.max(np.abs(reference_signal))
+    psnr = 20 * np.log10(peak / (np.sqrt(mse) + 1e-12))  # dB
+
+    return psnr
+
+def calculate_correlation(reference_signal, test_signal):
+    reference_signal = np.asarray(reference_signal, dtype=np.float64)
+    test_signal = np.asarray(test_signal, dtype=np.float64)
+
+    if len(reference_signal) != len(test_signal):
+        raise ValueError("Sygnały musza mieć tę sama długość!")
+
+    # Współczynnik korelacji
+    corr, _ = pearsonr(reference_signal, test_signal)
+
+    return corr
+
+
+def calculate_signal_metrics(reference_signal, test_signal):
+    """
+    Porównuje dwa sygnały: oryginalny (reference) i przefiltrowany/testowy (test).
+    Zwraca MSE, NRMSE, PSNR i współczynnik korelacji.
+    """
+    reference_signal = np.asarray(reference_signal, dtype=np.float64)
+    test_signal = np.asarray(test_signal, dtype=np.float64)
+
+    if len(reference_signal) != len(test_signal):
+        raise ValueError("Sygnały musza mieć tę sama długość!")
+
+    mse = np.mean((reference_signal - test_signal) ** 2)
+    rmse = np.sqrt(mse)
+    nrmse = rmse / (np.max(reference_signal) - np.min(reference_signal) + 1e-12)
+
+    # PSNR (Peak Signal-to-Noise Ratio)
+    peak = np.max(np.abs(reference_signal))
+    psnr = 20 * np.log10(peak / (np.sqrt(mse) + 1e-12))  # dB values
+
+    # Współczynnik korelacji
+    corr, _ = pearsonr(reference_signal, test_signal)
+
+    return {
+        "MSE": mse,
+        "NRMSE": nrmse,
+        "PSNR": psnr,
+        "Correlation Coefficient": corr
+    }
 
 ###############################################################################################################################################################
 
@@ -346,6 +498,8 @@ def load_wav_file_callback(sender, app_data):
     audio_file_filtered_save_path = os.path.dirname(audio_file_path)
     print(f"Zaladowano plik: {audio_file_path}, dane: {audio_file.shape}")
 
+    prepare_environment_for_filtering()
+
     call_create_audio_play_callback()
     show_plot_callback()
     show_spectrum_callback()
@@ -431,13 +585,18 @@ def show_plot_callback():
         dpg.delete_item(window_tag)
 
     # --- TWORZENIE NOWEGO OKNA Z WYKRESEM ---
-    with dpg.window(label="Wykres Amplitudy", tag=window_tag):
+    with dpg.window(label="Wykres Amplitudy", tag=window_tag, 
+                    on_close=lambda: delete_item(window_tag)):
         apply_window_geometry(window_tag, default_pos=(820, 10), default_size=(500, 250))
 
         with dpg.plot(tag=f"{window_tag}Plot", label="Amplituda w czasie", height=AmplitudePlotHeight, width=AmplitudePlotWidth):
             dpg.add_plot_axis(dpg.mvXAxis, label="Probki")
             with dpg.plot_axis(dpg.mvYAxis, label="Amplituda") as y_axis:
-                dpg.add_line_series(downsampled_x.tolist(), downsampled_data.tolist(), label="Amplituda", parent=y_axis)
+                line_series_tag = "Amp2"
+                if dpg.does_item_exist(line_series_tag):
+                    dpg.set_value(line_series_tag, [downsampled_x.tolist(), downsampled_data.tolist()])
+                else:
+                    dpg.add_line_series(downsampled_x.tolist(), downsampled_data.tolist(), label="Amplituda", parent=y_axis)
 
         # Add popup context menu to the plot
         with dpg.popup(parent=f"{window_tag}Plot", mousebutton=dpg.mvMouseButton_Right):
@@ -491,14 +650,19 @@ def show_spectrum_callback():
         dpg.delete_item(window_tag)
 
     # --- TWORZENIE NOWEGO OKNA Z WYKRESEM ---
-    with dpg.window(label="Widmo czestotliwosci (FFT) przed filtracja", tag=window_tag):
+    with dpg.window(label="Widmo czestotliwosci (FFT) przed filtracja", tag=window_tag, 
+                    on_close=lambda: delete_item(window_tag)):
         apply_window_geometry(window_tag, default_pos=(820, 270), default_size=(500, 250))
 
         with dpg.plot(tag=f"{window_tag}Plot", label="Widmo czestotliwosci", height=SpectrumPlotHeight, width=SpectrumPlotWidth):
             dpg.add_plot_axis(dpg.mvXAxis, label="Czestotliwosc [Hz]")
             with dpg.plot_axis(dpg.mvYAxis, label="Amplituda") as y_axis:
-                dpg.add_line_series(freqs.tolist(), spectrum.tolist(), label="Widmo", parent=y_axis)
-
+                line_series_tag = "Spec2"
+                if dpg.does_item_exist(line_series_tag):
+                    dpg.set_value(line_series_tag, [freqs.tolist(), spectrum.tolist()])
+                else:
+                    dpg.add_line_series(freqs.tolist(), spectrum.tolist(), label="Widmo", parent=y_axis)
+    
         # Add popup context menu to the plot
         with dpg.popup(parent=f"{window_tag}Plot", mousebutton=dpg.mvMouseButton_Right):
             dpg.add_text("Plot Options")
@@ -547,15 +711,21 @@ def show_original_plot_callback():
         dpg.delete_item(window_tag)
 
     # --- TWORZENIE NOWEGO OKNA Z WYKRESEM ---
-    with dpg.window(label="Wykres Amplitudy", tag=window_tag):
+    with dpg.window(label="Wykres Amplitudy czystego pliku", tag=window_tag, 
+                    on_close=lambda: delete_item(window_tag)):
         apply_window_geometry(window_tag, default_pos=(820, 10), default_size=(500, 250))
+        
         with dpg.plot(tag=f"{window_tag}Plot", label="Amplituda w czasie", height=AmplitudePlotHeight, width=AmplitudePlotWidth):
             dpg.add_plot_axis(dpg.mvXAxis, label="Probki")
             with dpg.plot_axis(dpg.mvYAxis, label="Amplituda") as y_axis:
                 line_tag = "orig_amp_line"
                 dpg.add_line_series([], [], parent=y_axis)
                 dpg.add_line_series([], [], parent=y_axis)
-                dpg.add_line_series(downsampled_x.tolist(), downsampled_data.tolist(), label="Amplituda", parent=y_axis, tag=line_tag)
+                line_series_tag = "Amp0"
+                if dpg.does_item_exist(line_series_tag):
+                    dpg.set_value(line_series_tag, [downsampled_x.tolist(), downsampled_data.tolist()])
+                else:
+                    dpg.add_line_series(downsampled_x.tolist(), downsampled_data.tolist(), label="Amplituda", parent=y_axis, tag=line_tag)
 
         # Add popup context menu to the plot
         with dpg.popup(parent=f"{window_tag}Plot", mousebutton=dpg.mvMouseButton_Right):
@@ -613,7 +783,8 @@ def show_original_spectrum_callback():
         dpg.delete_item(window_tag)
 
     # --- TWORZENIE NOWEGO OKNA Z WYKRESEM ---
-    with dpg.window(label="Widmo czestotliwosci (FFT) przed filtracja", tag=window_tag):
+    with dpg.window(label="Widmo czestotliwosci (FFT) czystego pliku", tag=window_tag, 
+                    on_close=lambda: delete_item(window_tag)):
         apply_window_geometry(window_tag, default_pos=(820, 270), default_size=(500, 250))
 
         with dpg.plot(tag=f"{window_tag}Plot", label="Widmo czestotliwosci", height=SpectrumPlotHeight, width=SpectrumPlotWidth):
@@ -622,7 +793,11 @@ def show_original_spectrum_callback():
                 line_tag = "orig_spec_line"
                 dpg.add_line_series([], [], parent=y_axis)
                 dpg.add_line_series([], [], parent=y_axis)
-                dpg.add_line_series(freqs.tolist(), spectrum.tolist(), label="Widmo", parent=y_axis, tag=line_tag)
+                line_series_tag = "Spec0"
+                if dpg.does_item_exist(line_series_tag):
+                    dpg.set_value(line_series_tag, [freqs.tolist(), spectrum.tolist()])
+                else:
+                    dpg.add_line_series(freqs.tolist(), spectrum.tolist(), label="Widmo", parent=y_axis, tag=line_tag)
 
         # Add popup context menu to the plot
         with dpg.popup(parent=f"{window_tag}Plot", mousebutton=dpg.mvMouseButton_Right):
@@ -677,13 +852,17 @@ def show_filtered_plot_callback():
         dpg.delete_item(window_tag)
 
     # --- TWORZENIE NOWEGO OKNA Z WYKRESEM ---
-    with dpg.window(label="Wykres Amplitudy", tag=window_tag):
+    with dpg.window(label="Wykres Amplitudy", tag=window_tag, 
+                    on_close=lambda: delete_item(window_tag)):
         apply_window_geometry(window_tag, default_pos=(820, 10), default_size=(500, 250))
-
         with dpg.plot(tag=f"{window_tag}Plot", label="Amplituda w czasie", height=AmplitudePlotHeight, width=AmplitudePlotWidth):
             dpg.add_plot_axis(dpg.mvXAxis, label="Probki")
             with dpg.plot_axis(dpg.mvYAxis, label="Amplituda") as y_axis:
-                dpg.add_line_series(downsampled_x.tolist(), downsampled_data.tolist(), label="Amplituda", parent=y_axis)
+                line_series_tag = "Amp1"
+                if dpg.does_item_exist(line_series_tag):
+                    dpg.set_value(line_series_tag, [downsampled_x.tolist(), downsampled_data.tolist()])
+                else:
+                    dpg.add_line_series(downsampled_x.tolist(), downsampled_data.tolist(), label="Amplituda", parent=y_axis)
 
         # Add popup context menu to the plot
         with dpg.popup(parent=f"{window_tag}Plot", mousebutton=dpg.mvMouseButton_Right):
@@ -740,13 +919,18 @@ def show_filtered_spectrum_callback():
         dpg.delete_item(window_tag)
 
     # --- TWORZENIE NOWEGO OKNA Z WYKRESEM ---
-    with dpg.window(label="Widmo czestotliwosci (FFT) po filtracji", tag=window_tag):
+    with dpg.window(label="Widmo czestotliwosci (FFT) po filtracji", tag=window_tag, 
+                    on_close=lambda: delete_item(window_tag)):
         apply_window_geometry(window_tag, default_pos=(820, 270), default_size=(500, 250))
 
         with dpg.plot(tag=f"{window_tag}Plot", label="Widmo czestotliwosci", height=SpectrumFilteredPlotHeight, width=SpectrumFilteredPlotWidth):
             dpg.add_plot_axis(dpg.mvXAxis, label="Czestotliwosc [Hz]")
             with dpg.plot_axis(dpg.mvYAxis, label="Amplituda") as y_axis:
-                dpg.add_line_series(freqs.tolist(), spectrum.tolist(), label="Widmo", parent=y_axis)
+                line_series_tag = "Spec1"
+                if dpg.does_item_exist(line_series_tag):
+                    dpg.set_value(line_series_tag, [freqs.tolist(), spectrum.tolist()])
+                else:
+                    dpg.add_line_series(freqs.tolist(), spectrum.tolist(), label="Widmo", parent=y_axis)
 
             # Add popup context menu to the plot
             with dpg.popup(parent=f"{window_tag}Plot", mousebutton=dpg.mvMouseButton_Right):
@@ -840,7 +1024,8 @@ def show_signal_difference():
     if dpg.does_item_exist(window_tag_ABA):
         dpg.delete_item(window_tag_ABA)
 
-    with dpg.window(label="Amplituda sygnalu", collapsed=BeforeAfterPlotWindowCollapse, tag=window_tag_ABA, width=BeforeAfterWindowAmplitudeWidth, height=BeforeAfterWindowAmplitudeHeight):
+    with dpg.window(label="Amplituda sygnalu", collapsed=BeforeAfterPlotWindowCollapse, tag=window_tag_ABA, width=BeforeAfterWindowAmplitudeWidth, height=BeforeAfterWindowAmplitudeHeight, 
+                    on_close=lambda: delete_item(window_tag_ABA)):
         apply_window_geometry(window_tag_ABA, default_pos=(820, 10), default_size=(600, 300))
 
         with dpg.plot(tag=f"{window_tag_ABA}Plot", parent=window_tag_ABA, height=BeforeAfterWindowAmplitudeHeight, width=BeforeAfterWindowAmplitudeWidth):
@@ -863,7 +1048,8 @@ def show_signal_difference():
     if dpg.does_item_exist(window_tag_ADiff):
         dpg.delete_item(window_tag_ADiff)
 
-    with dpg.window(label="Roznica amplitudy", collapsed=DifferenceAmplitudeWindowCollapse, tag=window_tag_ADiff, width=DifferenceAmplitudeWindowWidth, height=DifferenceAmplitudeWindowHeight):
+    with dpg.window(label="Roznica amplitudy", collapsed=DifferenceAmplitudeWindowCollapse, tag=window_tag_ADiff, width=DifferenceAmplitudeWindowWidth, height=DifferenceAmplitudeWindowHeight, 
+                    on_close=lambda: delete_item(window_tag_ADiff)):
         apply_window_geometry(window_tag_ADiff, default_pos=(820, 330), default_size=(600, 300))
 
         with dpg.plot(tag=f"{window_tag_ADiff}Plot", height=DifferenceAmplitudeWindowHeight, width=DifferenceAmplitudeWindowWidth):
@@ -885,7 +1071,8 @@ def show_signal_difference():
     if dpg.does_item_exist(window_tag_FBA):
         dpg.delete_item(window_tag_FBA)
 
-    with dpg.window(label="Widmo sygnalu", collapsed=BeforeAfterFrequencyDomainWindowCollapse, tag=window_tag_FBA, width=BeforeAfterWindowAmplitudeWidth, height=BeforeAfterWindowAmplitudeHeight):
+    with dpg.window(label="Widmo sygnalu", collapsed=BeforeAfterFrequencyDomainWindowCollapse, tag=window_tag_FBA, width=BeforeAfterWindowAmplitudeWidth, height=BeforeAfterWindowAmplitudeHeight, 
+                    on_close=lambda: delete_item(window_tag_FBA)):
         apply_window_geometry(window_tag_FBA, default_pos=(820, 10), default_size=(600, 300))
 
         with dpg.plot(tag=f"{window_tag_FBA}Plot", height=BeforeAfterWindowAmplitudeHeight, width=BeforeAfterWindowAmplitudeWidth):
@@ -908,7 +1095,8 @@ def show_signal_difference():
     if dpg.does_item_exist(window_tag_FDiff):
         dpg.delete_item(window_tag_FDiff)
 
-    with dpg.window(label="Roznica widm", collapsed=DifferenceFrequencyDomainWindowCollapse, tag=window_tag_FDiff, width=DifferenceSpectrumWindowWidth, height=DifferenceSpectrumWindowHeight):
+    with dpg.window(label="Roznica widm", collapsed=DifferenceFrequencyDomainWindowCollapse, tag=window_tag_FDiff, width=DifferenceSpectrumWindowWidth, height=DifferenceSpectrumWindowHeight, 
+                    on_close=lambda: delete_item(window_tag_FDiff)):
         apply_window_geometry(window_tag_FDiff, default_pos=(820, 660), default_size=(600, 300))
 
         with dpg.plot(tag=f"{window_tag_FDiff}Plot", height=DifferenceSpectrumWindowHeight, width=DifferenceSpectrumWindowWidth):
@@ -2237,6 +2425,9 @@ def open_add_noise_window_callback():
 # snr_mean_filtered = snr_filtered_value.mean().item()
 # print(f"srednie snr_filtered_value SNR (stereo): {snr_mean_filtered:.2f} dB")
 
+def delete_item(tag):
+    if (dpg.does_item_exist(tag)):
+        dpg.delete_item(tag)
 
 def prepare_environment_for_filtering():
     global BeforeAfterPlotWindowCollapse, DifferenceAmplitudeWindowCollapse, BeforeAfterFrequencyDomainWindowCollapse, DifferenceFrequencyDomainWindowCollapse
@@ -2252,6 +2443,13 @@ def prepare_environment_for_filtering():
     if dpg.does_item_exist("DifferenceFrequencyDomainWindow"):
         DifferenceFrequencyDomainWindowCollapse=dpg.get_item_state("DifferenceFrequencyDomainWindow")["toggled_open"]
         dpg.delete_item("DifferenceFrequencyDomainWindow")
+    if dpg.does_item_exist("AmplitudeWindowFiltered"):
+        dpg.delete_item("AmplitudeWindowFiltered")
+    if dpg.does_item_exist("SpectrumWindowFiltered"):
+        dpg.delete_item("SpectrumWindowFiltered")
+    if dpg.does_item_exist("FilteredSignalPlaybackWindow"):
+        dpg.delete_item("FilteredSignalPlaybackWindow")
+    
 
 tableHeight = 760
 tableWidth = 760
@@ -2312,7 +2510,7 @@ def check_resize():
     global viewport_last_size
     current_size = [dpg.get_viewport_width(), dpg.get_viewport_height()]
     if current_size != viewport_last_size:
-        print(f"Viewport resized: {current_size}")
+        # print(f"Viewport resized: {current_size}")
         change_windows_size(current_size)
         viewport_last_size = current_size
 
@@ -2341,6 +2539,9 @@ def change_windows_size(viewport_size):
             dpg.set_item_width("AmplitudeWindowFiltered", item_new_width)
             curr_pos = dpg.get_item_pos("AmplitudeWindowFiltered")
             dpg.set_item_pos("AmplitudeWindowFiltered", [menu_width + item_new_width - 3 * window_correction, curr_pos[1]])
+            if dpg.does_item_exist("OriginalAmplitudeWindow"):
+                dpg.set_item_width("OriginalAmplitudeWindow", item_new_width)
+                dpg.set_item_pos("OriginalAmplitudeWindow", curr_pos)
 
         if dpg.does_item_exist("SpectrumWindow"):
             item_new_width=(viewport_size[0] - menu_width) / 2 + window_correction
@@ -2351,6 +2552,9 @@ def change_windows_size(viewport_size):
             dpg.set_item_width("SpectrumWindowFiltered", item_new_width)
             curr_pos = dpg.get_item_pos("SpectrumWindowFiltered")
             dpg.set_item_pos("SpectrumWindowFiltered", [menu_width + item_new_width - 3 * window_correction, curr_pos[1]])
+            if dpg.does_item_exist("OriginalSpectrumWindow"):
+                dpg.set_item_width("OriginalSpectrumWindow", item_new_width)
+                dpg.set_item_pos("OriginalSpectrumWindow", curr_pos)
 
         if dpg.does_item_exist("InputSignalPlaybackWindow"):
             item_new_width=(viewport_size[0] - menu_width) / 2 + window_correction
