@@ -16,9 +16,10 @@ import time
 import librosa
 matplotlib.use('Agg')
 from scipy.io.wavfile import read, write
-from scipy.stats import pearsonr
-from scipy.signal import butter, bessel, cheby1, filtfilt, freqz, lfilter, sosfilt
+from scipy.stats import pearsonr, entropy
+from scipy.signal import butter, bessel, cheby1, filtfilt, freqz, lfilter, sosfilt, welch
 from scipy.fft import fft, fftfreq
+from sklearn.metrics import mean_squared_error, root_mean_squared_error
 from pathlib import Path
 from torchmetrics.functional.audio import signal_noise_ratio
 from typing import Union, Tuple
@@ -32,12 +33,12 @@ from typing import Union, Tuple
 CURRENT_DIR = pathlib.Path(__file__).parent.resolve()
 CONFIG_FILE = "window_config.json"
 COMBINED_PATH = os.path.join(CURRENT_DIR, CONFIG_FILE)
+window_config = {}
 
 audio_file_original = None  # Oryginalny, niezaszumiony sygnal
 sampling_rate_original = None  # Oryginalny, niezaszumiony sygnal - sampling rate
 audio_file_path_original = None 
 
-window_config = {}
 audio_file = None  # Tutaj bedzie zapisany wczytany plik audio, ktory bedzie podlegal odszumianiu
 sampling_rate = None
 audio_file_path = None
@@ -82,17 +83,52 @@ start_memory_info = None
 # Pobieramy aktualny proces
 process = psutil.Process()
 
+usage_data = {"cpu": [], "memory": []}
+stop_flag = None 
+usage_data = None 
+monitor_thread = None
+
+# for monitoring CPU and RAM usage
+def start_resource_monitor(interval=0.1):
+    global usage_data 
+    usage_data = {"cpu": [], "memory": []}
+    stop_flag = threading.Event()
+
+    def monitor():
+        process = psutil.Process(os.getpid())
+        while not stop_flag.is_set():
+            usage_data["cpu"].append(psutil.cpu_percent(interval=None))
+            usage_data["memory"].append(process.memory_info().rss / (1024 ** 2))  # MB
+            time.sleep(interval)
+
+    thread = threading.Thread(target=monitor)
+    thread.start()
+    return stop_flag, usage_data, thread
+
+def stop_resource_monitor(stop_flag, thread):
+    stop_flag.set()
+    thread.join()
+
 def start_benchmark():
-    global filter_start_time, start_cpu_percent, start_memory_info
+    global filter_start_time, start_cpu_percent, start_memory_info, stop_flag, usage_data, monitor_thread 
     filter_start_time = time.time()
     start_cpu_percent = psutil.cpu_percent(interval=None)
     start_memory_info = process.memory_info().rss  # RAM w bajtach uzywany przez nasz proces
+    stop_flag, usage_data, monitor_thread = start_resource_monitor(interval=0.1)
 
 def stop_benchmark_and_show_results():
-    global filter_start_time, start_cpu_percent, start_memory_info, audio_file_original, audio_file_filtered, sampling_rate, sampling_rate_filtered
+    global filter_start_time, start_cpu_percent, start_memory_info, audio_file_original, audio_file_filtered, sampling_rate, sampling_rate_filtered, sampling_rate_original, \
+            stop_flag, usage_data, monitor_thread 
+
     if filter_start_time is None:
         print("Benchmark nie zostal rozpoczety!")
         return
+
+    stop_resource_monitor(stop_flag, monitor_thread)
+
+    # Oblicz średnie
+    avg_cpu = sum(usage_data["cpu"]) / len(usage_data["cpu"])
+    avg_memory = sum(usage_data["memory"]) / len(usage_data["memory"])
 
     # Czas trwania
     elapsed_time = time.time() - filter_start_time
@@ -111,10 +147,23 @@ def stop_benchmark_and_show_results():
 
     thd_value = calculate_thd(audio_file_filtered, sampling_rate_filtered)
 
+    se_before = None
+    se_after = None
+    sfm_before = None
+    sfm_after = None
+
+    if audio_file_original is not None:
+        se_before = calculate_spectral_entropy(audio_file_original, sampling_rate_original)
+        sfm_before = calculate_spectral_flatness(audio_file_original, sampling_rate_original)
+
+    se_after = calculate_spectral_entropy(audio_file_filtered, sampling_rate_filtered)
+    sfm_after = calculate_spectral_flatness(audio_file_filtered, sampling_rate)
+
+
     snr_before = None
     snr_after = None
-    snr_bf = None
-    snr_af = None
+    # snr_bf = None
+    # snr_af = None
     snr_segmental_before = None
     snr_segmental_after = None
     snr_cb_before = None
@@ -130,8 +179,8 @@ def stop_benchmark_and_show_results():
         snr_before = calculate_snr(audio_file_original[:min_len], audio_file[:min_len])
         snr_after = calculate_snr(audio_file_original[:min_len], audio_file_filtered[:min_len])
 
-        snr_bf = calculate_snr2(audio_file_original[:min_len], audio_file[:min_len], sr=sampling_rate_filtered, mode='mean')
-        snr_af = calculate_snr2(audio_file_original[:min_len], audio_file_filtered[:min_len], sr=sampling_rate_filtered, mode='mean')
+        # snr_bf = calculate_snr2(audio_file_original[:min_len], audio_file[:min_len], sr=sampling_rate_filtered, mode='mean')
+        # snr_af = calculate_snr2(audio_file_original[:min_len], audio_file_filtered[:min_len], sr=sampling_rate_filtered, mode='mean')
 
         snr_segmental_before = compute_segmental_snr(audio_file_original[:min_len], audio_file[:min_len], sampling_rate_filtered)
         snr_segmental_after = compute_segmental_snr(audio_file_original[:min_len], audio_file_filtered[:min_len], sampling_rate_filtered)
@@ -156,24 +205,39 @@ def stop_benchmark_and_show_results():
         with dpg.group(horizontal=True):
             # Kolumna 1: Zasoby
             with dpg.group():
-                dpg.add_text("Zasoby sprzetowe i THD", color=[200, 200, 255])
+                dpg.add_text("Zasoby sprzetowe, THD, Spectral Entropy", color=[200, 200, 255])
                 with dpg.group(horizontal=True):
                     with dpg.group():
                         dpg.add_text("Czas filtracji:")
-                        dpg.add_text("Zmiana uzycia CPU:")
-                        dpg.add_text("Zmiana uzycia RAM:")
+                        dpg.add_text("Srednie zuzycie CPU:")
+                        dpg.add_text("Srednie zuzycie RAM:")
                         dpg.add_text("THD:")
+                        if audio_file_original is not None:
+                            dpg.add_text("Spectral Entropy (Original):")
+                        dpg.add_text("Spectral Entropy (Filtered):")
+
+                        if audio_file_original is not None:
+                            dpg.add_text("Spectral Flatness Measure (Original):")
+                        dpg.add_text("Spectral Flatness Measure (Filtered):")
+
                     with dpg.group():
                         dpg.add_text(f"{elapsed_time:.3f} s", color=value_color)
-                        dpg.add_text(f"{memory_usage_diff:+.2f} MB", color=value_color)
-                        dpg.add_text(f"{cpu_usage_diff:.2f}%", color=value_color)
-                        dpg.add_text(f"{thd_value:+.2f}%", color=value_color)
+                        dpg.add_text(f"{avg_cpu:.2f}%", color=value_color)
+                        dpg.add_text(f"{avg_memory:+.2f} MB", color=value_color)
+                        dpg.add_text(f"{thd_value:.2f}%", color=value_color)
+                        if audio_file_original is not None:
+                            dpg.add_text(f"{se_before:.4f}", color=value_color)
+                        dpg.add_text(f"{se_after:.4f}", color=value_color)
+
+                        if audio_file_original is not None:
+                            dpg.add_text(f"{sfm_before:.4f}", color=value_color)
+                        dpg.add_text(f"{sfm_after:.4f}", color=value_color)
 
             if (audio_file_original is not None and 
                 audio_file is not None and 
                 audio_file_filtered is not None):
 
-                # Kolumna 2: SNR
+                # Kolumna 2: SNR    
                 with dpg.group():
                     dpg.add_text("SNR", color=[200, 255, 200])
                     with dpg.group(horizontal=True):
@@ -212,13 +276,12 @@ def stop_benchmark_and_show_results():
                             dpg.add_text("Correlation (before):")
                             dpg.add_text("Correlation (after):")
                         with dpg.group():
-                            dpg.add_text(f"{statistics_before['MSE']:.2f}", color=value_color)
-                            dpg.add_text(f"{statistics_after['MSE']:.2f}", color=value_color)
-                            dpg.add_text(f"{statistics_before['NRMSE']:.2f}", color=value_color)
-                            dpg.add_text(f"{statistics_after['NRMSE']:.2f}", color=value_color)
+                            dpg.add_text(f"{statistics_before['MSE']:.4f}", color=value_color)
+                            dpg.add_text(f"{statistics_after['MSE']:.4f}", color=value_color)
+                            dpg.add_text(f"{statistics_before['NRMSE']:.4f}", color=value_color)
+                            dpg.add_text(f"{statistics_after['NRMSE']:.4f}", color=value_color)
                             dpg.add_text(f"{statistics_before['Correlation Coefficient']:.2f}", color=value_color)
                             dpg.add_text(f"{statistics_after['Correlation Coefficient']:.2f}", color=value_color)
-
 
     # Resetuj zmienne
     filter_start_time = None
@@ -253,8 +316,55 @@ def calculate_thd(signal, fs, fundamental_freq=None):
 
     return thd * 100  # jako %
 
+def calculate_spectral_entropy(signal, sampling_rate, base=2):
+    """
+    Oblicza Spectral Entropy sygnału.
 
-from sklearn.metrics import mean_squared_error, root_mean_squared_error
+    Parameters:
+        signal (np.ndarray): sygnał 1D.
+        sampling_rate (int): częstotliwość próbkowania.
+        method (str): 'fft' lub 'welch'.
+        nperseg (int): segment size dla metody Welch'a.
+        base (float): podstawa logarytmu (domyślnie 2 dla bitów).
+
+    Returns:
+        float: wartość entropii widmowej.
+    """
+    # Widmo mocy z FFT
+    fft_vals = np.fft.fft(signal)
+    psd = np.abs(fft_vals) ** 2
+   
+    # Normalizacja do rozkładu prawdopodobieństwa
+    psd = psd[:len(psd)//2]  # tylko dodatnie czestotliwosci
+    psd_sum = np.sum(psd)
+    if psd_sum == 0:
+        return 0.0
+    psd_norm = psd / psd_sum
+
+    # Obliczenie entropii
+    spectral_entropy = entropy(psd_norm, base=base)
+    return spectral_entropy
+
+def calculate_spectral_flatness(signal, sampling_rate, nperseg=256):
+    """
+    Oblicza Spectral Flatness Measure (SFM) sygnału.
+
+    Parameters:
+        signal (np.ndarray): Sygnał wejściowy.
+        sampling_rate (int): Częstotliwość próbkowania.
+        nperseg (int): Długość segmentu dla metody Welch'a.
+
+    Returns:
+        float: Wartość Spectral Flatness.
+    """
+    freqs, psd = welch(signal, fs=sampling_rate, nperseg=nperseg)
+
+    psd = psd + 1e-12  # zapobiegamy log(0) i dzieleniu przez 0
+    geometric_mean = np.exp(np.mean(np.log(psd)))
+    arithmetic_mean = np.mean(psd)
+
+    spectral_flatness = geometric_mean / arithmetic_mean
+    return spectral_flatness
 
 def calculate_MSE(reference_signal, test_signal):
     reference_signal = np.asarray(reference_signal, dtype=np.float64)
@@ -318,7 +428,6 @@ def calculate_correlation(reference_signal, test_signal):
     corr, _ = pearsonr(reference_signal, test_signal)
 
     return corr
-
 
 def calculate_signal_metrics(reference_signal, test_signal):
     """
@@ -1019,6 +1128,9 @@ def show_signal_difference():
         fft_diff_original = np.abs(fft_original) - np.abs(fft_filt) 
         fft_original_half = np.abs(fft_original[:half_n])
 
+    with dpg.theme() as custom_line_theme:
+        with dpg.theme_component(dpg.mvLineSeries):
+            dpg.add_theme_color(dpg.mvPlotCol_Line, [0, 255, 0, 80], category=dpg.mvThemeCat_Plots) # Green with alpha = 100
 
     window_tag_ABA = "BeforeAfterPlotWindow"
     if dpg.does_item_exist(window_tag_ABA):
@@ -1035,7 +1147,9 @@ def show_signal_difference():
                 dpg.add_line_series(x_data.tolist(), y_noised.tolist(), label="Zaszumiony", parent=y_axis)
                 dpg.add_line_series(x_data.tolist(), y_filt.tolist(), label="Po filtracji", parent=y_axis)
                 if y_original is not None:
-                    dpg.add_line_series(x_data.tolist(), y_original.tolist(), label="Oryginalny", parent=y_axis)
+                    line_series_tag  = dpg.add_line_series(x_data.tolist(), y_original.tolist(), label="Oryginalny", parent=y_axis)
+                    dpg.set_item_theme(line_series_tag, custom_line_theme)
+
 
         # Add popup context menu to the plot
         with dpg.popup(parent=f"{window_tag_ABA}Plot", mousebutton=dpg.mvMouseButton_Right):
@@ -1058,7 +1172,8 @@ def show_signal_difference():
             with dpg.plot_axis(dpg.mvYAxis, label="Roznica amplitud") as y_axis:
                 dpg.add_line_series(x_data.tolist(), y_diff.tolist(), label="Roznica N-F", parent=y_axis)
                 if y_diff_original is not None:
-                    dpg.add_line_series(x_data.tolist(), y_diff_original.tolist(), label="Roznica O-F", parent=y_axis)
+                    line_series_tag = dpg.add_line_series(x_data.tolist(), y_diff_original.tolist(), label="Roznica O-F", parent=y_axis)
+                    dpg.set_item_theme(line_series_tag, custom_line_theme)
 
             # Add popup context menu to the plot
             with dpg.popup(parent=f"{window_tag_ADiff}Plot", mousebutton=dpg.mvMouseButton_Right):
@@ -1082,7 +1197,8 @@ def show_signal_difference():
                 dpg.add_line_series(freqs.tolist(), fft_noised_half.tolist(), label="Zaszumione widmo", parent=y_axis)
                 dpg.add_line_series(freqs.tolist(), fft_filt_half.tolist(), label="Widmo po filtracji", parent=y_axis)
                 if fft_original_half is not None:
-                    dpg.add_line_series(freqs.tolist(), fft_original_half.tolist(), label="Oryginalne widmo", parent=y_axis)
+                    line_series_tag = dpg.add_line_series(freqs.tolist(), fft_original_half.tolist(), label="Oryginalne widmo", parent=y_axis)
+                    dpg.set_item_theme(line_series_tag, custom_line_theme)
 
         # Add popup context menu to the plot
         with dpg.popup(parent=f"{window_tag_FBA}Plot", mousebutton=dpg.mvMouseButton_Right):
@@ -1105,7 +1221,8 @@ def show_signal_difference():
             with dpg.plot_axis(dpg.mvYAxis, label="Roznica widm") as y_axis:
                 dpg.add_line_series(freqs.tolist(), fft_diff_noised.tolist(), label="N - F", parent=y_axis)
                 if fft_diff_original is not None:
-                    dpg.add_line_series(freqs.tolist(), fft_diff_original.tolist(), label="O - F", parent=y_axis)
+                    line_series_tag = dpg.add_line_series(freqs.tolist(), fft_diff_original.tolist(), label="O - F", parent=y_axis)
+                    dpg.set_item_theme(line_series_tag, custom_line_theme)
 
         # Add popup context menu to the plot
         with dpg.popup(parent=f"{window_tag_FDiff}Plot", mousebutton=dpg.mvMouseButton_Right):
@@ -1459,26 +1576,63 @@ with dpg.window(label="Filtracja pasmowoprzepustowa", tag="bandpass_filter_popup
 
 ###############################################################################################################################################################
 
-def lms_filter(x, d, filter_order=32, mu=0.001):
-    """
-    x - sygnal wejsciowy
-    d - sygnal odniesienia (moze byc x lub inny)
-    filter_order - liczba wspolczynnikow filtra
-    mu - wspolczynnik uczenia
-    """
-    # min_length = min(len(x), len(d))
-    # x = np.array(x[:min_length])
-    # d = np.array(d[:min_length])
+# def lms_filter(x, d, filter_order=32, mu=0.001):
+#     """
+#     x - input signal
+#     d - reference signal
+#     filter_order - number of filter coefficients
+#     mu - learning rate
+#     """
+#     try:
+#         x = np.asarray(x, dtype=float)
+#         d = np.asarray(d, dtype=float)
+#     except Exception as e:
+#         raise ValueError(f"Unable to convert x or d to numpy array: {e}")
 
-    # Konwersja danych do formatu wymaganego przez padasip
-    x_matrix = pa.input_from_history(x, filter_order)  # Ksztalt (N, filter_order)
-    d_vector = np.array(d[filter_order-1:])  # Obciecie do zgodnych wymiarow
+#     if len(x) < filter_order or len(d) < filter_order:
+#         raise ValueError("Input signals must be at least as long as the filter_order.")
 
-    # Inicjalizacja i uruchomienie filtra
-    f = pa.filters.FilterLMS(n=filter_order, mu=mu, w="zeros")
-    y, e, w = f.run(d_vector, x_matrix)  # Uwaga: kolejnosc (d, x)!
-    
-    return y, e, w
+#     try:
+#         x_matrix = pa.input_from_history(x, filter_order)
+#         d_vector = d[filter_order-1:]  # Trimming to align dimensions
+#     except Exception as e:
+#         raise ValueError(f"Error preparing data for LMS: {e}")
+
+#     f = pa.filters.FilterLMS(n=filter_order, mu=mu, w="zeros")
+#     y, e, w = f.run(d_vector, x_matrix)
+
+#     return y, e, w
+
+def lms_filter(input_signal, desired, filter_length=32, mu=0.01):
+    """
+    Implementacja filtra LMS.
+
+    Parameters:
+        input_signal (np.ndarray): Sygnał wejściowy (np. z zakłóceniami).
+        desired (np.ndarray): Sygnał pożądany (referencyjny).
+        filter_length (int): Liczba współczynników filtra (rząd filtra).
+        mu (float): Współczynnik uczenia (krok adaptacji).
+
+    Returns:
+        output (np.ndarray): Sygnał wyjściowy po filtracji LMS.
+        error (np.ndarray): Błąd adaptacji (różnica między desired a output).
+        weights (np.ndarray): Ewolucja współczynników filtra w czasie.
+    """
+    n_samples = len(input_signal)
+    weights = np.zeros(filter_length)
+    output = np.zeros(n_samples)
+    error = np.zeros(n_samples)
+
+    for n in range(filter_length, n_samples):
+        x = input_signal[n-filter_length:n][::-1]  # wektor wejściowy (ostatnie próbki, odwrócone)
+        y = np.dot(weights, x)                     # sygnał wyjściowy
+        output[n] = y
+        error[n] = desired[n] - y                  # błąd
+        weights += 2 * mu * error[n] * x           # aktualizacja współczynników
+
+    return output, error, weights
+
+
 
 def measure_lms_convergence(e, stable_duration=10, threshold_ratio=1.05):
     """
@@ -2586,6 +2740,30 @@ def change_windows_size(viewport_size):
     except Exception as ex:
         print(ex)
 
+def clear_loaded_audio_data():
+    global audio_file_original
+    global sampling_rate_original
+    global audio_file_path_original
+    global audio_file
+    global sampling_rate
+    global audio_file_path
+    global audio_file_filtered_save_path
+    global audio_file_filtered
+    global sampling_rate_filtered
+    global audio_file_path_filtered
+
+    audio_file_original = None
+    sampling_rate_original = None
+    audio_file_path_original = None
+    audio_file = None
+    sampling_rate = None
+    audio_file_path = None
+    audio_file_filtered_save_path = None
+    audio_file_filtered = None
+    sampling_rate_filtered = None
+    audio_file_path_filtered = None
+
+    prepare_environment_for_filtering()
 
 with dpg.file_dialog(directory_selector=False,
                      show=False, 
@@ -2659,6 +2837,7 @@ with dpg.window(label="Menu", tag="MainWindow", no_resize=False, no_close=True):
                 dpg.add_button(label="Zapisz layout", tag="save_layout", callback=save_window_config_callback)
                 dpg.add_button(label="Generuj sygnal sin", callback=open_gen_signal_window)
                 dpg.add_button(label="Zaszum plik", callback=open_add_noise_window_callback)
+                dpg.add_button(label="Wyczysc wczytane dane", callback=lambda: clear_loaded_audio_data())
                      
 
 dpg.setup_dearpygui()
